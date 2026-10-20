@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Dynatune</title>
+  <meta name="description" content="Dynamisches Stimmgerät: spielt den erkannten Ton in exakter Stimmung zurück.">
+  <meta name="theme-color" content="#0f1115">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body data-state="off">
+  <header>
+    <h1>Dynatune</h1>
+    <span id="status" class="chip">Aus</span>
+    <button id="open-settings" class="icon" aria-label="Einstellungen">⚙</button>
+  </header>
+
+  <main>
+    <section class="readout" aria-live="polite">
+      <div id="note" class="note">–</div>
+      <div id="cents" class="cents"></div>
+      <div id="refinfo" class="refinfo">Referenz: –</div>
+    </section>
+
+    <div class="meter-wrap">
+      <canvas id="meter" aria-label="Stimmanzeige: Objekt oben = zu hoch, unten = zu tief. Antippen beendet den Referenzton."></canvas>
+      <div class="holdtrack"><div id="holdbar"></div></div>
+    </div>
+  </main>
+
+  <footer>
+    <button id="start" class="primary">Start</button>
+    <p class="hint">Antippen der Anzeige beendet den Referenzton.</p>
+  </footer>
+
+  <dialog id="settings">
+    <form method="dialog" class="sheet">
+      <div class="sheet-head">
+        <h2>Einstellungen</h2>
+        <button id="close-settings" class="icon" aria-label="Schließen" type="button">✕</button>
+      </div>
+
+      <fieldset>
+        <legend>Referenzton</legend>
+        <label>Klang <select id="timbre"></select></label>
+        <label>Oktave
+          <select id="octave">
+            <option value="0">gleiche Oktave</option>
+            <option value="-12">eine Oktave tiefer</option>
+          </select>
+        </label>
+        <label>Lautstärke <output id="volume-val"></output>
+          <input id="volume" type="range" min="0.05" max="1" step="0.05">
+        </label>
+        <label>Kammerton a′ <output id="a4-val"></output>
+          <input id="a4" type="range" min="415" max="446" step="1">
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Erkennung &amp; Anzeige</legend>
+        <label>Empfindlichkeit <output id="sensitivity-val"></output>
+          <input id="sensitivity" type="range" min="1" max="10" step="1">
+        </label>
+        <label>Grüner Bereich <output id="tolerance-val"></output>
+          <input id="tolerance" type="range" min="1" max="10" step="1">
+        </label>
+        <label>Notennamen
+          <select id="lang">
+            <option value="de">deutsch (H, B, Cis)</option>
+            <option value="int">international (B, B♭, C♯)</option>
+          </select>
+        </label>
+        <label>Instrument notiert <select id="transpose"></select></label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Halten &amp; Stoppen</legend>
+        <label>Automatisch aus nach <output id="holdSec-val"></output>
+          <input id="holdSec" type="range" min="5" max="60" step="1">
+        </label>
+        <p id="stop-info" class="small"></p>
+        <div class="row">
+          <button id="train" type="button">Stoppsignal einlernen</button>
+          <button id="stop-reset" type="button" class="ghost">Löschen</button>
+        </div>
+        <label>Erkennungsschwelle <output id="stopThreshold-val"></output>
+          <input id="stopThreshold" type="range" min="0.3" max="0.95" step="0.01">
+        </label>
+        <p id="stop-last" class="small"></p>
+      </fieldset>
+
+      <fieldset>
+        <legend>Rückkopplungsschutz (NLMS)</legend>
+        <label class="check"><input id="nlms" type="checkbox"> Echo des Referenztons unterdrücken</label>
+        <p id="echo-info" class="small"></p>
+        <button id="calibrate" type="button">Echo kalibrieren</button>
+        <p class="small">Kalibrieren ohne Kopfhörer, Gerät in Spielposition. Mit Kopfhörern ist keine Unterdrückung nötig.</p>
+      </fieldset>
+
+      <p id="latency" class="small"></p>
+      <p class="small">Dynatune · Prototyp · <a href="https://github.com/tisapps/dynatune/blob/main/docs/KONZEPT.md" target="_blank" rel="noopener">Konzept</a></p>
+    </form>
+  </dialog>
+
+  <dialog id="train-dialog">
+    <div class="sheet">
+      <h2>Stoppsignal einlernen</h2>
+      <p>Mach dein Signal (z. B. Zungenschnalzen) <strong>4×</strong>, jeweils mit etwa einer Sekunde Pause.</p>
+      <p id="train-progress" class="big"></p>
+      <button id="train-cancel" type="button" class="ghost">Abbrechen</button>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
