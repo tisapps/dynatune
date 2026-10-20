@@ -4,7 +4,7 @@ import { analyzeFreq, freqFromMidi, centsBetween, noteName, TRANSPOSITIONS } fro
 import { ReferenceEngine, TIMBRES } from './reference.js';
 import { TunerDisplay, RANGE } from './display.js';
 import { calibrateEcho } from './calibrate.js';
-import { features, buildTemplate, score } from './stopsignal.js';
+import { features, buildTemplate, score, isValidTemplate } from './stopsignal.js';
 
 // ---------- Einstellungen ----------
 const DEFAULTS = {
@@ -19,14 +19,21 @@ const DEFAULTS = {
   lang: 'de',
   transpose: 'C',
   nlms: true,
-  stopThreshold: 0.6,
+  stopThreshold: 0.5,
   stopTemplate: null,
 };
 const STORE_KEY = 'dynatune.settings.v1';
 
+const SETTINGS_REV = 2;
 function loadSettings() {
-  try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(STORE_KEY) || '{}') }; }
-  catch { return { ...DEFAULTS }; }
+  let s;
+  try { s = { ...DEFAULTS, ...JSON.parse(localStorage.getItem(STORE_KEY) || '{}') }; }
+  catch { s = { ...DEFAULTS }; }
+  // Rev. 2: neues Stoppsignal-Verfahren – alte Vorlage passt nicht mehr, Schwelle neu
+  if ((s.rev || 1) < 2) { s.stopTemplate = null; s.stopThreshold = DEFAULTS.stopThreshold; }
+  if (s.stopTemplate && !isValidTemplate(s.stopTemplate)) s.stopTemplate = null;
+  s.rev = SETTINGS_REV;
+  return s;
 }
 function saveSettings() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch { /* privat/blockiert */ }
@@ -135,7 +142,8 @@ function setState(s) {
     // NLMS nur adaptieren, wenn ausschließlich die Referenz klingt
     node.port.postMessage({ type: 'adapt', value: s === 'hold' });
     const g = gateFor(S.sensitivity);
-    node.port.postMessage({ type: 'transient', value: s === 'hold' || s === 'train', gate: (g * 2) ** 2 });
+    // Stoppsignal-Erkennung nur im Halten (beim Spielen würde z. B. Zungenstoß auslösen) und beim Einlernen
+    node.port.postMessage({ type: 'transient', value: s === 'hold' || s === 'train', gate: g * g });
   }
   if (s === 'hold') { holdStart = performance.now(); leak = { samples: [], base: null }; }
   if (s === 'tracking') peakRms = 0;
@@ -147,11 +155,13 @@ function setState(s) {
 function startReference(note) {
   currentNote = note;
   ref.play(freqFromMidi(note + S.octave, S.a4));
+  node?.port.postMessage({ type: 'ref', f: ref.freq });
   renderReference();
 }
 
 function stopReference(reason) {
   ref?.stop(reason === 'signal' ? 0.08 : 0.4);
+  node?.port.postMessage({ type: 'ref', f: 0 });
   currentNote = null;
   renderReference();
   renderNote(null);
@@ -234,17 +244,32 @@ function onPitch(m) {
 function onTransient(m) {
   const f = features(m.buf, m.fs);
   if (state === 'train' && training) {
-    training.list.push(f);
-    $('train-progress').textContent = `${training.list.length} / ${training.needed} aufgenommen`;
-    if (training.list.length >= training.needed) finishTraining();
+    if (training.phase === 'record') recordSample(f);
+    else showTestResult(score(S.stopTemplate, f));
     return;
   }
   if (state === 'hold' && S.stopTemplate) {
     const sc = score(S.stopTemplate, f);
-    $('stop-last').textContent = `letzte Erkennung: ${(sc * 100).toFixed(0)} %`;
-    if (sc >= S.stopThreshold) stopReference('signal');
+    const pct = `${(sc * 100).toFixed(0)} %`;
+    $('stop-last').textContent = `letzte Erkennung: ${pct}`;
+    if (sc >= S.stopThreshold) {
+      stopReference('signal');
+      flashHint(`Stoppsignal erkannt (${pct})`);
+    } else {
+      flashHint(`Geräusch: ${pct} – Stoppsignal braucht ${Math.round(S.stopThreshold * 100)} %`);
+    }
   }
 }
+
+let hintTimer;
+function flashHint(msg) {
+  const h = $('hint');
+  h.textContent = msg;
+  h.classList.add('flash');
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => { h.textContent = HINT; h.classList.remove('flash'); }, 2500);
+}
+const HINT = 'Antippen der Anzeige beendet den Referenzton.';
 
 function onWorkletMessage(ev) {
   const m = ev.data;
@@ -328,22 +353,47 @@ async function startTraining() {
   if (!ctx) await start();          // Audio bei Bedarf automatisch starten
   if (!ctx) return;
   ref.stop(0.05); currentNote = null; renderReference();
+  node.port.postMessage({ type: 'ref', f: 0 });
   renderNote(null); display.reset();
-  training = { list: [], needed: 4 };
+  training = { list: [], needed: 5, phase: 'record' };
   setState('train');
+  $('train-title').textContent = 'Stoppsignal einlernen';
+  $('train-text').innerHTML = `Mach dein Signal (z. B. Zungenschnalzen) <strong>${training.needed}×</strong>, jeweils mit etwa einer Sekunde Pause. Möglichst so, wie du es später beim Spielen machst.`;
   $('train-progress').textContent = `0 / ${training.needed} aufgenommen`;
+  $('train-log').textContent = '';
+  $('train-cancel').textContent = 'Abbrechen';
   $('train-dialog').showModal();
+}
+function recordSample(f) {
+  training.list.push(f);
+  $('train-progress').textContent = `${training.list.length} / ${training.needed} aufgenommen`;
+  $('train-log').textContent = '●'.repeat(training.list.length) + '○'.repeat(training.needed - training.list.length);
+  if (training.list.length >= training.needed) finishTraining();
 }
 function finishTraining() {
   const tpl = buildTemplate(training.list);
   S.stopTemplate = tpl;
   saveSettings();
-  const self = Math.min(...tpl.selfScores);
-  $('train-progress').textContent = `Fertig. Übereinstimmung der Aufnahmen: ${(self * 100).toFixed(0)} %`;
-  training = null;
-  setState('idle');
   renderStopInfo();
-  setTimeout(() => $('train-dialog').close(), 1500);
+  const vals = tpl.selfScores.map((v) => Math.round(v * 100));
+  const worst = Math.min(...vals);
+  const verdict = worst >= 60 ? 'gut' : worst >= 40 ? 'brauchbar – Signal möglichst gleichmäßig machen' : 'schwankend – bitte neu einlernen';
+  training.phase = 'test';
+  $('train-title').textContent = 'Stoppsignal testen';
+  $('train-progress').textContent = `Übereinstimmung: ${vals.join(' · ')} % (${verdict})`;
+  $('train-text').textContent = `Jetzt testen: Mach dein Signal oder andere Geräusche. Ab ${Math.round(S.stopThreshold * 100)} % gilt es als Stoppsignal.`;
+  $('train-log').textContent = '';
+  $('train-cancel').textContent = 'Fertig';
+}
+function showTestResult(sc) {
+  const pct = Math.round(sc * 100);
+  const ok = sc >= S.stopThreshold;
+  const line = document.createElement('div');
+  line.textContent = `${ok ? '✓ Stoppsignal' : '✗ kein Stoppsignal'} · ${pct} %`;
+  line.className = ok ? 'ok' : 'no';
+  const log = $('train-log');
+  log.prepend(line);
+  while (log.children.length > 5) log.lastChild.remove();
 }
 function cancelTraining() {
   training = null;
@@ -352,7 +402,7 @@ function cancelTraining() {
 function renderStopInfo() {
   const t = S.stopTemplate;
   $('stop-info').textContent = t
-    ? `Eingelernt (${t.n} Aufnahmen, Dauer ca. ${t.durMs.toFixed(0)} ms)`
+    ? `Eingelernt (${t.n} Aufnahmen, Übereinstimmung ${t.selfScores.map((v) => Math.round(v * 100)).join('/')} %)`
     : 'Noch nicht eingelernt – Abschaltung per Zeit oder Antippen.';
   $('train-main-state').textContent = t ? '✓ eingelernt' : 'einlernen';
   $('train-main').classList.toggle('trained', !!t);
@@ -366,6 +416,7 @@ async function runCalibration() {
   btn.disabled = true;
   $('echo-info').textContent = 'Kalibriere … bitte ruhig sein.';
   ref.stop(0.05); currentNote = null;
+  node.port.postMessage({ type: 'ref', f: 0 });
   const prev = state;
   setState('train');                  // Tonerkennung pausieren
   try {

@@ -81,3 +81,28 @@ console.log('OK');
   assert.ok(Math.abs(mean - 4) < 0.5, 'Musiker muss trotz Echounterdrückung erkannt werden');
 }
 console.log('OK (Doppelsprechen)');
+
+// Stoppsignal-Auslöser im Haltezustand: Referenz klingt laut übers Mikrofon mit
+// (ohne Echounterdrückung), Schnalzer ist nicht lauter als die Referenz.
+{
+  const sec = 2, n = sec * fs;
+  for (const [label, clickAmp, expect] of [['Schnalzer gleich laut wie Referenz', 0.25, true], ['Schnalzer 6 dB leiser', 0.125, true], ['Schnalzer 12 dB leiser', 0.0625, true], ['ohne Schnalzer', 0, false]]) {
+    const p = loadProcessor(fs);
+    p.send({ type: 'transient', value: true, gate: 0.004 ** 2 });
+    p.send({ type: 'ref', f: 440 });
+    const mic = tone(440, sec, [1, 0.62, 0.52, 0.42, 0.33, 0.28, 0.3, 0.2], 0.6, 0.001);
+    let s2 = 1;
+    const r = () => ((s2 = (s2 * 16807) % 2147483647) / 2147483647 - 0.5) * 2;
+    const at = Math.round(1.2 * fs);
+    for (let i = 0; i < 0.03 * fs; i++) {
+      const t = i / fs;
+      mic[at + i] += clickAmp * Math.exp(-t / 0.0025) * (0.6 * Math.sin(2 * Math.PI * 1400 * t) + 0.4 * Math.sin(2 * Math.PI * 2600 * t) + 0.2 * r()) / 0.6;
+    }
+    p.feed(mic.subarray(0, fs));                       // Einschwingen (Toneinsatz zählt nicht)
+    const tr = p.feed(mic.subarray(fs)).filter(m => m.type === 'transient');
+    const refPeak = Math.max(...mic.slice(0, at).map(Math.abs));
+    console.log(`Auslöser: ${label} (Ref.-Spitze ${refPeak.toFixed(2)}): ${tr.length} Ereignis(se)`);
+    assert.ok(expect ? tr.length >= 1 : tr.length === 0);
+  }
+}
+console.log('OK (Auslöser)');

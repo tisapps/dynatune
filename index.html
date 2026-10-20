@@ -37,7 +37,7 @@
       <button id="start" class="primary">Start</button>
       <button id="train-main" class="secondary" type="button">Stoppsignal<br><small id="train-main-state">einlernen</small></button>
     </div>
-    <p class="hint">Antippen der Anzeige beendet den Referenzton.</p>
+    <p id="hint" class="hint">Antippen der Anzeige beendet den Referenzton.</p>
   </footer>
 
   <dialog id="settings">
@@ -83,7 +83,7 @@
           <tr><th>Stoppsignal</th><td>
             <div class="ctl"><button id="train" type="button">Einlernen</button><button id="stop-reset" type="button" class="ghost">Löschen</button></div>
             <p id="stop-info" class="small"></p></td></tr>
-          <tr><th><label for="stopThreshold">Schwelle</label></th><td><div class="ctl"><input id="stopThreshold" type="range" min="0.3" max="0.95" step="0.01"><output id="stopThreshold-val"></output></div>
+          <tr><th><label for="stopThreshold">Schwelle</label></th><td><div class="ctl"><input id="stopThreshold" type="range" min="0.2" max="0.9" step="0.05"><output id="stopThreshold-val"></output></div>
             <p id="stop-last" class="small"></p></td></tr>
         </tbody></table>
       </section>
@@ -105,9 +105,10 @@
 
   <dialog id="train-dialog">
     <div class="sheet">
-      <h2>Stoppsignal einlernen</h2>
-      <p>Mach dein Signal (z. B. Zungenschnalzen) <strong>4×</strong>, jeweils mit etwa einer Sekunde Pause.</p>
+      <h2 id="train-title">Stoppsignal einlernen</h2>
+      <p id="train-text"></p>
       <p id="train-progress" class="big"></p>
+      <div id="train-log" class="train-log" aria-live="polite"></div>
       <button id="train-cancel" type="button" class="ghost">Abbrechen</button>
     </div>
   </dialog>

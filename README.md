@@ -35,6 +35,8 @@ Tipps:
 
 ```sh
 node test/pitch.test.mjs        # Genauigkeit, Reaktionszeit, NLMS, Doppelsprechen
-node test/stopsignal.test.mjs   # Trennschärfe Stoppsignal
+node test/stopsignal.test.mjs   # Trennschärfe Stoppsignal unter realistischen Schwankungen
+node test/stopchain.test.mjs    # Stoppsignal-Kette mit laut mitklingender Referenz
 node test/e2e.mjs               # Browser-Test mit simuliertem Mikrofon (Playwright + Chromium)
+node test/e2e-train.mjs         # Browser-Test Einlernen + Testmodus
 ```

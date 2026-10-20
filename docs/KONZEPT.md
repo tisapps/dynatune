@@ -2,7 +2,7 @@
 
 **Dynamisches Stimmgerät als Progressive Web App (PWA) für Smartphones**
 
-Stand: 20.10.2026 · Version 1.2 (nach erstem Praxistest) · Prototyp: Stufe 1 umgesetzt
+Stand: 20.10.2026 · Version 1.3 (Stoppsignal überarbeitet) · Prototyp: Stufe 1 umgesetzt
 
 ---
 
@@ -162,25 +162,34 @@ Auf echten Geräten ist mit 20–35 dB zu rechnen, weil Smartphone-Lautsprecher 
 
 ## 9. Stoppsignal
 
-**Einlernen:** Der Musiker macht sein Signal 4×, z. B. Zungenschnalzen. Für jede Aufnahme werden Merkmale berechnet:
-- Spektralform in 12 breiten, logarithmisch verteilten Bändern (250 Hz – 12 kHz), unabhängig von der Lautstärke
+**Einlernen:** über die Schaltfläche neben „Start“ (oder in den Einstellungen).
+- Der Musiker macht sein Signal **5×**, z. B. Zungenschnalzen. Jede Aufnahme wird sofort quittiert (●●●○○).
+- Danach zeigt die App die **Übereinstimmung** jeder Aufnahme mit den übrigen vier („gut“ ab 60 %).
+- Anschließend folgt ein **Testmodus** im selben Dialog: Jedes Geräusch wird mit seinem Wert angezeigt, als ✓ Stoppsignal oder ✗ kein Stoppsignal.
+
+**Merkmale** werden nur aus dem lauten Teil des Ereignisses berechnet (Rahmen über −20 dB des Spitzenwerts). So stören Raumhall, Grundrauschen und ein leiser Referenzton wenig:
+- Spektralform: 10 Bänder (400 Hz – 10 kHz), gemittelt über 512er-Rahmen, lautstärkeunabhängig
 - spektraler Schwerpunkt
-- Dauer über −20 dB
+- Dauer (logarithmisch)
 
-Aus den vier Aufnahmen entsteht eine Vorlage. Die App zeigt an, wie gut die Aufnahmen untereinander übereinstimmen.
+**Vergleich:** Der Abstand zur Vorlage wird in Einheiten der beim Einlernen gemessenen Streuung gerechnet, mit einer Mindeststreuung. Gleichmäßige Signale werden dadurch streng geprüft, natürlich schwankende großzügiger. Ergebnis 0…100 %: 1 Streuung daneben ≈ 61 %, 2 ≈ 14 %. Schwelle einstellbar, Standard 50 %.
 
-**Erkennung:** Nur im Zustand „Halten“. Das Worklet meldet plötzliche Pegelsprünge (> 11 dB über dem gleitenden Mittel) im echobereinigten Signal. Diese werden mit der Vorlage verglichen:
+**Auslöser im Haltezustand:**
+- Der Referenzton klingt ja weiter. Ein **Kammfilter** zieht deshalb das Signal von k Perioden des Referenztons vorher ab (k so gewählt, dass die Verzögerung ≥ 20 ms und fast ganzzahlig ist). Der gleichbleibende Referenzton löscht sich samt aller Obertöne aus, ein Schnalzer bleibt unverändert.
+- Ausgelöst wird bei einem Pegelsprung von > 8 dB im Anteil über 1,5 kHz.
+- Das wirkt auch ohne Kalibrierung der Echounterdrückung.
+- Während des Spielens bleibt die Erkennung aus, weil z. B. der Zungenstoß bei Bläsern ähnlich klingt.
 
-> Wert = (0,4 · Formähnlichkeit + 0,6 · Schwerpunktähnlichkeit) × Dauerfaktor
+**Rückmeldung im Betrieb:** Unter der Anzeige erscheint kurz „Stoppsignal erkannt (72 %)“ oder „Geräusch: 31 % – Stoppsignal braucht 50 %“. So lässt sich die Schwelle gezielt anpassen.
 
-Die Schwelle ist einstellbar (Standard 60 %). Gespeichert wird lokal auf dem Gerät.
+**Gemessen** (synthetisch, mit Schwankungen in Resonanz ±15 %, Dauer ±40 %, Pegel ±10 dB, Raumhall und Grundrauschen):
 
-**Gemessen** (synthetische Signale, `test/stopsignal.test.mjs`):
-
-| Eingelernt | Treffer | Fehlauslöser (Klatschen, Klopfen, Geigeneinsatz, „ts“) |
-|---|---|---|
-| Zungenschnalzen | 82–98 % | ≤ 5 % |
-| breitbandiger Knack | 69–96 % | ≤ 5 % |
+| Test | Ergebnis |
+|---|---|
+| Übereinstimmung beim Einlernen (je gegen die übrigen) | 66–97 % |
+| Treffer Zungenschnalzen (10 %-Quantil) | 82–84 % |
+| Fehlauslöser (Schnipsen, Klatschen, Klopfen, Geigeneinsatz, „ts“, Husten) | höchstens 27 % |
+| Kette Worklet → Merkmale → Vergleich, Referenz laut mitklingend | Schnalzer bei 0, −6 und −12 dB relativ zur Referenz: 15/15 gestoppt; Klatschen: 0/5 |
 
 **Ausweichwege:** Antippen der Anzeige, automatische Abschaltung. Später zusätzlich ein Bluetooth-Blätterpedal (es meldet sich als Tastatur).
 
@@ -204,7 +213,7 @@ Sendebus ──▶ Lautsprecher/Kopfhörer  und  ──▶ Worklet-Eingang 2 (f�
 
 | Datei | Aufgabe |
 |---|---|
-| `worklet/dynatune-processor.js` | Audio-Thread: NLMS, MPM, Transienten, Kalibrier-Aufnahme |
+| `worklet/dynatune-processor.js` | Audio-Thread: NLMS, MPM, Kammfilter + Transienten, Kalibrier-Aufnahme |
 | `js/app.js` | Audio-Aufbau, Zustandsautomat, Bedienung |
 | `js/reference.js` | Referenzton-Engine |
 | `js/display.js` | Grafik |

@@ -158,6 +158,11 @@ class DynatuneProcessor extends AudioWorkletProcessor {
     super();
     this.fs = sampleRate;
     this.ring = new Float32Array(RING);
+    // Kammfilter für die Stoppsignal-Erkennung: zieht das Signal von k Perioden
+    // des Referenztons vorher ab → der gleichbleibende Referenzton (mit allen
+    // Obertönen) löscht sich aus, kurze Geräusche bleiben erhalten.
+    this.ringC = new Float32Array(RING);
+    this.combDelay = 0;
     this.ringPos = 0;
     this.sinceHop = 0;
     this.win = new Float64Array(W_PRECISE);
@@ -187,6 +192,13 @@ class DynatuneProcessor extends AudioWorkletProcessor {
     this.transientOn = false;
     this.slowEnergy = 1e-6;
     this.capture = null;
+    // Hochpass 1,5 kHz (Biquad) nur für die Auslösung: Schnalzer haben dort viel
+    // Energie, der Referenzton und gespielte Töne vergleichsweise wenig.
+    {
+      const w0 = (2 * Math.PI * 1500) / this.fs, cs = Math.cos(w0), al = Math.sin(w0) / (2 * Math.SQRT1_2);
+      const a0 = 1 + al;
+      this.hp = { b0: (1 + cs) / 2 / a0, b1: -(1 + cs) / a0, b2: (1 + cs) / 2 / a0, a1: (-2 * cs) / a0, a2: (1 - al) / a0, x1: 0, x2: 0, y1: 0, y2: 0 };
+    }
     this.cooldown = 0;
     this.clickGate = 1e-5;
 
@@ -211,6 +223,9 @@ class DynatuneProcessor extends AudioWorkletProcessor {
       case 'transient':
         this.transientOn = !!m.value;
         if (m.gate !== undefined) this.clickGate = m.gate;
+        break;
+      case 'ref':
+        this.combDelay = this.pickCombDelay(m.f);
         break;
       case 'record':
         this.rec = { mic: new Float32Array(m.samples), ref: new Float32Array(m.samples), pos: 0 };
@@ -282,12 +297,22 @@ class DynatuneProcessor extends AudioWorkletProcessor {
       this.refPos = (p + 1) % size;
 
       this.ring[this.ringPos] = e;
+      let cv = e;
+      if (this.combDelay > 0) {
+        const pos = this.ringPos - this.combDelay + RING;
+        const i0 = Math.floor(pos), fr = pos - i0;
+        cv = e - ((1 - fr) * this.ring[i0 % RING] + fr * this.ring[(i0 + 1) % RING]);
+      }
+      this.ringC[this.ringPos] = cv;
       this.ringPos = (this.ringPos + 1) % RING;
-      blockEnergy += e * e;
+      const h = this.hp;
+      const hy = h.b0 * cv + h.b1 * h.x1 + h.b2 * h.x2 - h.a1 * h.y1 - h.a2 * h.y2;
+      h.x2 = h.x1; h.x1 = cv; h.y2 = h.y1; h.y1 = hy;
+      blockEnergy += hy * hy;
 
       if (this.capture) {
         const c = this.capture;
-        c.buf[c.pos++] = e;
+        c.buf[c.pos++] = cv;
         if (c.pos >= c.buf.length) {
           this.port.postMessage({ type: 'transient', buf: c.buf, fs: this.fs });
           this.capture = null;
@@ -309,15 +334,29 @@ class DynatuneProcessor extends AudioWorkletProcessor {
     return true;
   }
 
+  // Verzögerung = k Perioden, mindestens 20 ms (Spektrum des Geräuschs bleibt
+  // unverfälscht), k so gewählt, dass sie möglichst genau ganzzahlig ist.
+  pickCombDelay(f) {
+    if (!(f > 0)) return 0;
+    const P = this.fs / f, minD = 0.02 * this.fs, maxD = RING / 2;
+    let best = 0, bestErr = Infinity;
+    for (let k = Math.ceil(minD / P); k * P <= maxD; k++) {
+      const D = k * P, err = Math.abs(D - Math.round(D));
+      if (err < bestErr) { bestErr = err; best = D; }
+      if (err < 0.01) break;
+    }
+    return best;
+  }
+
   detectTransient(energy, n) {
     if (this.cooldown > 0) this.cooldown -= n;
     if (this.transientOn && !this.capture && this.cooldown <= 0 &&
-        energy > this.clickGate && energy > 12 * this.slowEnergy) {
+        energy > this.clickGate && energy > 6 * this.slowEnergy) {
       // 256 Samples Vorlauf aus dem Ring + 4096 Samples Nachlauf
       const pre = 256, post = 4096;
       const buf = new Float32Array(pre + post);
       for (let i = 0; i < pre + n; i++) {
-        buf[i] = this.ring[(this.ringPos - pre - n + i + RING) % RING];
+        buf[i] = this.ringC[(this.ringPos - pre - n + i + RING) % RING];
       }
       this.capture = { buf, pos: pre + n };
       this.cooldown = Math.round(0.35 * this.fs);
