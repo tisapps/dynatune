@@ -14,7 +14,8 @@ const DEFAULTS = {
   volume: 0.6,
   sensitivity: 6,     // 1..10
   holdSec: 20,        // automatische Abschaltung im Haltezustand
-  tolerance: 3,       // grüner Bereich ±Cent
+  tolerance: 3,       // Mitte des Übergangs grün → Farbe (voll grün bis ±(tol-1), Farbe ab ±(tol+1))
+  smoothing: 6,       // Glättung der Anzeige 1..10
   lang: 'de',
   transpose: 'C',
   nlms: true,
@@ -57,6 +58,8 @@ let lastPitch = null;
 const $ = (id) => document.getElementById(id);
 const display = new TunerDisplay($('meter'));
 display.tol = S.tolerance;
+const tauFor = (s) => 0.04 * 1.35 ** (s - 1);   // Glättung 1..10 → 0,04 … 0,6 s
+display.tau = tauFor(S.smoothing);
 
 // ---------- Audio-Aufbau ----------
 async function start() {
@@ -203,7 +206,7 @@ function onPitch(m) {
         if (state !== 'tracking') setState('tracking');
         peakRms = Math.max(peakRms, m.rms);
         display.push(cents, now / 1000, changed);
-        renderNote(note, cents);
+        setReadout(note, cents, false, changed);
       }
     } else if (grayCount >= 2) {
       // Graubereich: Referenz spielt weiter, Anzeige grau
@@ -211,7 +214,7 @@ function onPitch(m) {
       if (state === 'hold' && currentNote != null) setState('tracking');
       if (state === 'tracking') peakRms = Math.max(peakRms, m.rms);
       display.push(Math.sign(cents) * (RANGE + 2), now / 1000);
-      renderNote(note, cents, true);
+      setReadout(note, cents, true);
     }
   } else {
     candidate = { note: null, count: 0 };
@@ -250,9 +253,24 @@ function onWorkletMessage(ev) {
 }
 
 // ---------- Anzeige ----------
+// Notenname sofort, Cent-Zahl geglättet und höchstens 10× pro Sekunde (ruhiger lesbar)
+let readout = null, readoutShown = 0;
+function setReadout(note, cents, gray, immediate = false) {
+  const prevNote = readout?.note;
+  readout = { note, cents, gray };
+  if (immediate || note !== prevNote) renderReadout();
+}
+function renderReadout() {
+  readoutShown = performance.now();
+  if (!readout) return;
+  const cents = readout.gray || display.cents == null ? readout.cents : display.cents;
+  renderNote(readout.note, cents, readout.gray);
+}
+
 function renderNote(note, cents, gray = false) {
   const el = $('note');
   if (note == null) {
+    readout = null;
     el.innerHTML = '–';
     $('cents').textContent = '';
     return;
@@ -274,6 +292,7 @@ function renderReference() {
 
 function frame() {
   display.draw(performance.now() / 1000);
+  if (readout && performance.now() - readoutShown > 100) renderReadout();
   const bar = $('holdbar');
   if (state === 'hold') {
     const left = Math.max(0, S.holdSec - (performance.now() - holdStart) / 1000);
@@ -294,17 +313,22 @@ function showLatency() {
 
 let toastTimer;
 function toast(msg) {
+  // Popover liegt in der obersten Ebene, also auch über geöffneten Dialogen
   const t = $('toast');
   t.textContent = msg;
-  t.hidden = false;
+  try { t.showPopover(); } catch { t.style.display = 'block'; }
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.hidden = true), 4000);
+  toastTimer = setTimeout(() => {
+    try { t.hidePopover(); } catch { t.style.display = 'none'; }
+  }, 4000);
 }
 
 // ---------- Stoppsignal einlernen ----------
-function startTraining() {
-  if (!ctx) { toast('Bitte zuerst Start drücken.'); return; }
+async function startTraining() {
+  if (!ctx) await start();          // Audio bei Bedarf automatisch starten
+  if (!ctx) return;
   ref.stop(0.05); currentNote = null; renderReference();
+  renderNote(null); display.reset();
   training = { list: [], needed: 4 };
   setState('train');
   $('train-progress').textContent = `0 / ${training.needed} aufgenommen`;
@@ -330,11 +354,14 @@ function renderStopInfo() {
   $('stop-info').textContent = t
     ? `Eingelernt (${t.n} Aufnahmen, Dauer ca. ${t.durMs.toFixed(0)} ms)`
     : 'Noch nicht eingelernt – Abschaltung per Zeit oder Antippen.';
+  $('train-main-state').textContent = t ? '✓ eingelernt' : 'einlernen';
+  $('train-main').classList.toggle('trained', !!t);
 }
 
 // ---------- Echo kalibrieren ----------
 async function runCalibration() {
-  if (!ctx) { toast('Bitte zuerst Start drücken.'); return; }
+  if (!ctx) await start();
+  if (!ctx) return;
   const btn = $('calibrate');
   btn.disabled = true;
   $('echo-info').textContent = 'Kalibriere … bitte ruhig sein.';
@@ -381,7 +408,8 @@ function bindSettings() {
     a4: (v) => `${v} Hz`,
     volume: (v) => `${Math.round(v * 100)} %`,
     holdSec: (v) => `${v} s`,
-    tolerance: (v) => `±${v} ct`,
+    tolerance: (v) => `±${Math.max(0, v - 1)}…${v + 1} ct`,
+    smoothing: (v) => `${Math.round(tauFor(v) * 1000)} ms`,
     stopThreshold: (v) => `${Math.round(v * 100)} %`,
   };
   bind('a4', 'a4', Number, renderReference);
@@ -391,6 +419,7 @@ function bindSettings() {
   bind('sensitivity', 'sensitivity', Number);
   bind('holdSec', 'holdSec', Number);
   bind('tolerance', 'tolerance', Number, () => (display.tol = S.tolerance));
+  bind('smoothing', 'smoothing', Number, () => (display.tau = tauFor(S.smoothing)));
   bind('lang', 'lang', String, renderReference);
   bind('transpose', 'transpose', String, renderReference);
   bind('nlms', 'nlms', Boolean, applyNlmsSetting);
@@ -405,6 +434,7 @@ $('open-settings').addEventListener('click', () => $('settings').showModal());
 $('close-settings').addEventListener('click', () => $('settings').close());
 $('calibrate').addEventListener('click', runCalibration);
 $('train').addEventListener('click', startTraining);
+$('train-main').addEventListener('click', startTraining);
 $('train-cancel').addEventListener('click', () => { cancelTraining(); $('train-dialog').close(); });
 $('train-dialog').addEventListener('close', cancelTraining);
 $('stop-reset').addEventListener('click', () => { S.stopTemplate = null; saveSettings(); renderStopInfo(); });

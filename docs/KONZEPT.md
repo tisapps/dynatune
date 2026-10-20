@@ -2,7 +2,7 @@
 
 **Dynamisches Stimmgerät als Progressive Web App (PWA) für Smartphones**
 
-Stand: 20.10.2026 · Version 1.1 (nach Abstimmung) · Prototyp: Stufe 1 umgesetzt
+Stand: 20.10.2026 · Version 1.2 (nach erstem Praxistest) · Prototyp: Stufe 1 umgesetzt
 
 ---
 
@@ -19,7 +19,8 @@ Herkömmliche Stimmgeräte zeigen nur an, ob ein Ton zu hoch oder zu tief ist. D
 | Zielgerät | Smartphone (Hochformat, Touch); Tablet und Desktop funktionieren nebenbei |
 | Mehrstimmigkeit | keine; es wird immer genau ein Ton erkannt |
 | Erkennungsbreite | ±20 Cent um einen Halbton |
-| Grüner Bereich | ±3 Cent (einstellbar 1–10 Cent) |
+| Grüner Bereich | voll grün bis ±2 Cent, **weicher Übergang** bis ±4 Cent (Mitte ±3, einstellbar) |
+| Glättung der Anzeige | Median + zeitbasierte Glättung, Standard ≈ 180 ms (einstellbar 40–600 ms) |
 | Graubereich (20–50 Cent neben einem Halbton) | Anzeige grau, **Referenz spielt weiter** |
 | Rückkopplungsschutz | NLMS-Echounterdrückung (adaptives Filter), mit Kalibrierung |
 | Ende des Haltens | eingelerntes Stoppsignal, Antippen der Anzeige oder **automatische Abschaltung nach einstellbarer Zeit (5–60 s, Standard 20 s)** |
@@ -27,7 +28,7 @@ Herkömmliche Stimmgeräte zeigen nur an, ob ein Ton zu hoch oder zu tief ist. D
 ## 3. Bedienablauf
 
 1. **Start** antippen und den Mikrofonzugriff erlauben.
-2. Einmalig in den Einstellungen Klang und Kammerton wählen. Ohne Kopfhörer zusätzlich **Echo kalibrieren**, optional das **Stoppsignal einlernen**.
+2. Einmalig in den Einstellungen Klang und Kammerton wählen. Ohne Kopfhörer zusätzlich **Echo kalibrieren**. Das **Stoppsignal** lässt sich direkt auf dem Hauptbildschirm einlernen (Schaltfläche neben Start); falls nötig, startet das Audio dabei automatisch.
 3. Ton spielen. Nach rund 20–60 ms (je nach Tonhöhe, siehe Abschnitt 5) setzt die Referenz in sauberer Stimmung ein.
 4. Beim Tonwechsel springt die Referenz mit 20 ms Überblendung mit.
 5. Hört der Musiker auf, klingt die Referenz weiter („Halten“). Ein Balken zeigt die verbleibende Zeit bis zur automatischen Abschaltung.
@@ -137,18 +138,25 @@ Auf echten Geräten ist mit 20–35 dB zu rechnen, weil Smartphone-Lautsprecher 
 ## 8. Grafik
 
 - **Senkrechte Skala** von −20 bis +20 Cent, Graubereiche ober- und unterhalb. Darüber stehen groß der Notenname (z. B. „A₄“), die Abweichung mit einer Nachkommastelle und die Referenzfrequenz.
-- **Farbiges Objekt (Kugel)** bewegt sich senkrecht und wird leicht geglättet. Beim Tonwechsel springt es ohne Glättung.
+- **Farbiges Objekt (Kugel)** bewegt sich senkrecht. Damit es ruhig läuft, wird zweistufig geglättet:
+  1. Der Median der letzten 7 Messungen (≈ 35 ms) entfernt Ausreißer.
+  2. Danach folgt eine zeitbasierte Exponentialglättung im Bildtakt. Der Regler „Glättung“ stellt die Zeitkonstante ein (40–600 ms, Standard ≈ 180 ms).
+
+  Beim Tonwechsel springt die Kugel ohne Glättung. Die Cent-Zahl zeigt den geglätteten Wert und wird höchstens 10× pro Sekunde aktualisiert. Die Tonerkennung und die Referenz selbst werden nicht geglättet und bleiben so schnell wie bisher.
 - **Verlaufsspur** der letzten 3 Sekunden links der Kugel: zeigt Tendenzen wie Absacken am Bogenende oder Hochziehen beim Crescendo.
 - **Farben:**
 
 | Bereich | Farbe |
 |---|---|
-| −20 … −3 Cent | Violett → Blau (fließend) |
-| **−3 … +3 Cent** | **Grün** (scharf begrenzt) |
-| +3 … +20 Cent | Gelb → Orange (fließend) |
+| −20 … −4 Cent | Violett → Blau (fließend) |
+| −4 … −2 Cent | weicher Übergang Blau → Grün |
+| **−2 … +2 Cent** | **Grün** |
+| +2 … +4 Cent | weicher Übergang Grün → Gelb |
+| +4 … +20 Cent | Gelb → Orange (fließend) |
 | außerhalb ±20 Cent | Grau (Referenz spielt weiter) |
 | Halten (kein Spiel) | Kugel blass grau, Restzeit als Balken |
 
+- Der Regler „Grüner Bereich“ verschiebt die Mitte des Übergangs (Standard 3 → Übergang 2…4 Cent). Das grüne Hintergrundband blendet entsprechend weich aus.
 - Eine Farbleiste am rechten Rand dient als Legende. Die Darstellung läuft per Canvas mit Bildwiederholrate und passt sich an Hell- und Dunkelmodus an.
 - **Antippen der Anzeige** beendet den Referenzton.
 
@@ -211,13 +219,17 @@ Sendebus ──▶ Lautsprecher/Kopfhörer  und  ──▶ Worklet-Eingang 2 (f�
 - Screen Wake Lock hält den Bildschirm an.
 - Kein Build-Schritt, keine Abhängigkeiten: statisches Hosting genügt (z. B. GitHub Pages). HTTPS ist Pflicht für den Mikrofonzugriff.
 
-## 11. Weitere Funktionen
+## 11. Einstellungen
+
+Die Einstellungen sind in vier Gruppen gegliedert: Referenzton, Erkennung & Anzeige, Halten & Stoppen, Rückkopplungsschutz. Jede Gruppe ist eine Tabelle mit einer Zeile je Funktion: Bezeichnung links, Regler bzw. Auswahl rechts. Die Zeilen wechseln zwischen Mittelgrau und Dunkelgrau (im hellen Modus zwei helle Grautöne). Die Gruppenüberschriften sind größer gesetzt.
+
+## 12. Weitere Funktionen
 
 - **Notennamen** deutsch (H, B, Cis) oder international (B, B♭, C♯).
 - **Transposition** für C, B, A, F, Es: Die Anzeige zeigt die notierte Note, die Referenz klingt real.
 - Alle Einstellungen werden lokal gespeichert.
 
-## 12. Ausbaustufen
+## 13. Ausbaustufen
 
 | Stufe | Inhalt | Status |
 |---|---|---|
@@ -226,7 +238,7 @@ Sendebus ──▶ Lautsprecher/Kopfhörer  und  ──▶ Worklet-Eingang 2 (f�
 | 3 | Praxistest auf iPhone und Android-Geräten; Feinabstimmung von Pegeln, Schwellen und NLMS-Länge; Latenzmessung | geplant |
 | 4 | Stimmungssysteme (rein, pythagoreisch, bezogen auf Grundton), Übungsstatistik, Bluetooth-Pedal | Idee |
 
-## 13. Risiken und offene Punkte
+## 14. Risiken und offene Punkte
 
 - **iOS:** Bei aktivem Mikrofon kann Safari die Ausgabe leiser oder über den Hörer ausgeben. Das muss auf echten Geräten geprüft werden. Mit Kopfhörern tritt das Problem nicht auf.
 - **Android-Latenz** schwankt stark je nach Gerät. Die App zeigt den Wert an. Bei hoher Latenz helfen Kopfhörer und das Halten.

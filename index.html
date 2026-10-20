@@ -33,7 +33,10 @@
   </main>
 
   <footer>
-    <button id="start" class="primary">Start</button>
+    <div class="actions">
+      <button id="start" class="primary">Start</button>
+      <button id="train-main" class="secondary" type="button">Stoppsignal<br><small id="train-main-state">einlernen</small></button>
+    </div>
     <p class="hint">Antippen der Anzeige beendet den Referenzton.</p>
   </footer>
 
@@ -44,63 +47,56 @@
         <button id="close-settings" class="icon" aria-label="Schließen" type="button">✕</button>
       </div>
 
-      <fieldset>
-        <legend>Referenzton</legend>
-        <label>Klang <select id="timbre"></select></label>
-        <label>Oktave
-          <select id="octave">
-            <option value="0">gleiche Oktave</option>
-            <option value="-12">eine Oktave tiefer</option>
-          </select>
-        </label>
-        <label>Lautstärke <output id="volume-val"></output>
-          <input id="volume" type="range" min="0.05" max="1" step="0.05">
-        </label>
-        <label>Kammerton a′ <output id="a4-val"></output>
-          <input id="a4" type="range" min="415" max="446" step="1">
-        </label>
-      </fieldset>
+      <section class="group">
+        <h3>Referenzton</h3>
+        <table class="set"><tbody>
+          <tr><th><label for="timbre">Klang</label></th><td><select id="timbre"></select></td></tr>
+          <tr><th><label for="octave">Oktave</label></th><td>
+            <select id="octave">
+              <option value="0">gleiche Oktave</option>
+              <option value="-12">eine Oktave tiefer</option>
+            </select></td></tr>
+          <tr><th><label for="volume">Lautstärke</label></th><td><div class="ctl"><input id="volume" type="range" min="0.05" max="1" step="0.05"><output id="volume-val"></output></div></td></tr>
+          <tr><th><label for="a4">Kammerton a′</label></th><td><div class="ctl"><input id="a4" type="range" min="415" max="446" step="1"><output id="a4-val"></output></div></td></tr>
+        </tbody></table>
+      </section>
 
-      <fieldset>
-        <legend>Erkennung &amp; Anzeige</legend>
-        <label>Empfindlichkeit <output id="sensitivity-val"></output>
-          <input id="sensitivity" type="range" min="1" max="10" step="1">
-        </label>
-        <label>Grüner Bereich <output id="tolerance-val"></output>
-          <input id="tolerance" type="range" min="1" max="10" step="1">
-        </label>
-        <label>Notennamen
-          <select id="lang">
-            <option value="de">deutsch (H, B, Cis)</option>
-            <option value="int">international (B, B♭, C♯)</option>
-          </select>
-        </label>
-        <label>Instrument notiert <select id="transpose"></select></label>
-      </fieldset>
+      <section class="group">
+        <h3>Erkennung &amp; Anzeige</h3>
+        <table class="set"><tbody>
+          <tr><th><label for="sensitivity">Empfindlichkeit</label></th><td><div class="ctl"><input id="sensitivity" type="range" min="1" max="10" step="1"><output id="sensitivity-val"></output></div></td></tr>
+          <tr><th><label for="smoothing">Glättung</label></th><td><div class="ctl"><input id="smoothing" type="range" min="1" max="10" step="1"><output id="smoothing-val"></output></div></td></tr>
+          <tr><th><label for="tolerance">Grüner Bereich</label></th><td><div class="ctl"><input id="tolerance" type="range" min="1" max="10" step="1"><output id="tolerance-val"></output></div></td></tr>
+          <tr><th><label for="lang">Notennamen</label></th><td>
+            <select id="lang">
+              <option value="de">deutsch (H, B)</option>
+              <option value="int">international (B, B♭)</option>
+            </select></td></tr>
+          <tr><th><label for="transpose">Instrument notiert</label></th><td><select id="transpose"></select></td></tr>
+        </tbody></table>
+      </section>
 
-      <fieldset>
-        <legend>Halten &amp; Stoppen</legend>
-        <label>Automatisch aus nach <output id="holdSec-val"></output>
-          <input id="holdSec" type="range" min="5" max="60" step="1">
-        </label>
-        <p id="stop-info" class="small"></p>
-        <div class="row">
-          <button id="train" type="button">Stoppsignal einlernen</button>
-          <button id="stop-reset" type="button" class="ghost">Löschen</button>
-        </div>
-        <label>Erkennungsschwelle <output id="stopThreshold-val"></output>
-          <input id="stopThreshold" type="range" min="0.3" max="0.95" step="0.01">
-        </label>
-        <p id="stop-last" class="small"></p>
-      </fieldset>
+      <section class="group">
+        <h3>Halten &amp; Stoppen</h3>
+        <table class="set"><tbody>
+          <tr><th><label for="holdSec">Automatisch aus nach</label></th><td><div class="ctl"><input id="holdSec" type="range" min="5" max="60" step="1"><output id="holdSec-val"></output></div></td></tr>
+          <tr><th>Stoppsignal</th><td>
+            <div class="ctl"><button id="train" type="button">Einlernen</button><button id="stop-reset" type="button" class="ghost">Löschen</button></div>
+            <p id="stop-info" class="small"></p></td></tr>
+          <tr><th><label for="stopThreshold">Schwelle</label></th><td><div class="ctl"><input id="stopThreshold" type="range" min="0.3" max="0.95" step="0.01"><output id="stopThreshold-val"></output></div>
+            <p id="stop-last" class="small"></p></td></tr>
+        </tbody></table>
+      </section>
 
-      <fieldset>
-        <legend>Rückkopplungsschutz (NLMS)</legend>
-        <label class="check"><input id="nlms" type="checkbox"> Echo des Referenztons unterdrücken</label>
-        <p id="echo-info" class="small"></p>
-        <button id="calibrate" type="button">Echo kalibrieren</button>
-        <p class="small">Kalibrieren ohne Kopfhörer, Gerät in Spielposition. Mit Kopfhörern ist keine Unterdrückung nötig.</p>
-      </fieldset>
+      <section class="group">
+        <h3>Rückkopplungsschutz (NLMS)</h3>
+        <table class="set"><tbody>
+          <tr><th><label for="nlms">Echo unterdrücken</label></th><td><input id="nlms" type="checkbox" class="switch"></td></tr>
+          <tr><th>Kalibrierung</th><td><button id="calibrate" type="button">Echo kalibrieren</button>
+            <p id="echo-info" class="small"></p></td></tr>
+        </tbody></table>
+        <p class="small group-hint">Ohne Kopfhörer kalibrieren, Gerät in Spielposition. Mit Kabelkopfhörern ist keine Unterdrückung nötig; Bluetooth-Kopfhörer sind zu langsam.</p>
+      </section>
 
       <p id="latency" class="small"></p>
       <p class="small">Dynatune · Prototyp · <a href="https://github.com/tisapps/dynatune/blob/main/docs/KONZEPT.md" target="_blank" rel="noopener">Konzept</a></p>
@@ -116,7 +112,7 @@
     </div>
   </dialog>
 
-  <div id="toast" class="toast" hidden></div>
+  <div id="toast" class="toast" popover="manual"></div>
 
   <script type="module" src="js/app.js"></script>
 </body>
