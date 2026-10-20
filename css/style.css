@@ -8,6 +8,7 @@
   --danger: #dc2626;
   --row-a: #e3e5e9;
   --row-b: #f2f3f5;
+  --row-line: rgba(0, 0, 0, 0.08);
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -21,13 +22,14 @@
     --danger: #ef4444;
     --row-a: #3a3f47;
     --row-b: #262a30;
+    --row-line: rgba(255, 255, 255, 0.07);
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
   --bg: #0f1115; --surface: #1a1d23; --fg: #eef0f3; --fg-muted: #9aa1ac;
   --line: #2c313a; --accent: #22c55e; --danger: #ef4444; color-scheme: dark;
-  --row-a: #3a3f47; --row-b: #262a30;
+  --row-a: #3a3f47; --row-b: #262a30; --row-line: rgba(255, 255, 255, 0.07);
 }
 
 * { box-sizing: border-box; }
@@ -106,10 +108,12 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
 .sheet { padding: 16px; display: flex; flex-direction: column; gap: 18px; }
 .sheet-head { display: flex; align-items: center; }
 .sheet h2 { margin: 0; flex: 1; font-size: 1.45rem; }
-.group h3 { font-size: 1.2rem; margin: 0 0 8px; }
-table.set { width: 100%; table-layout: fixed; border-collapse: collapse; border-radius: 10px; overflow: hidden; }
-table.set tr:nth-child(odd) { background: var(--row-a); }
-table.set tr:nth-child(even) { background: var(--row-b); }
+.group { border-radius: 12px; padding: 12px 4px 4px; }
+.group:nth-of-type(odd) { background: var(--row-a); }
+.group:nth-of-type(even) { background: var(--row-b); }
+.group h3 { font-size: 1.2rem; margin: 0 8px 4px; }
+table.set { width: 100%; table-layout: fixed; border-collapse: collapse; }
+table.set tr + tr { border-top: 1px solid var(--row-line); }
 table.set th, table.set td { padding: 10px 8px 10px 10px; vertical-align: middle; }
 table.set th { text-align: left; font-weight: 500; font-size: 0.92rem; width: 42%; hyphens: auto; -webkit-hyphens: auto; overflow-wrap: break-word; }
 table.set td { width: 58%; }
@@ -123,7 +127,7 @@ input.switch { width: 22px; height: 22px; accent-color: var(--accent); }
 select { font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); max-width: 60%; }
 output { color: var(--fg-muted); font-variant-numeric: tabular-nums; }
 .small { font-size: 0.82rem; color: var(--fg-muted); margin: 0; }
-.group-hint { margin-top: 8px; }
+.group-hint { margin: 4px 8px 8px; }
 .big { font-size: 1.3rem; text-align: center; }
 a { color: inherit; }
 

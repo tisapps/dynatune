@@ -230,7 +230,7 @@ Sendebus ──▶ Lautsprecher/Kopfhörer  und  ──▶ Worklet-Eingang 2 (f�
 
 ## 11. Einstellungen
 
-Die Einstellungen sind in vier Gruppen gegliedert: Referenzton, Erkennung & Anzeige, Halten & Stoppen, Rückkopplungsschutz. Jede Gruppe ist eine Tabelle mit einer Zeile je Funktion: Bezeichnung links, Regler bzw. Auswahl rechts. Die Zeilen wechseln zwischen Mittelgrau und Dunkelgrau (im hellen Modus zwei helle Grautöne). Die Gruppenüberschriften sind größer gesetzt.
+Die Einstellungen sind in vier Gruppen gegliedert: Referenzton, Erkennung & Anzeige, Halten & Stoppen, Rückkopplungsschutz. Jede Gruppe ist ein eigener Block mit größerer Überschrift und einer Tabelle mit einer Zeile je Funktion: Bezeichnung links, Regler bzw. Auswahl rechts. **Der Grauton wechselt je Gruppe** (Mittelgrau / Dunkelgrau, im hellen Modus zwei helle Grautöne). Innerhalb einer Gruppe trennen feine Linien die Zeilen.
 
 ## 12. Weitere Funktionen
 
