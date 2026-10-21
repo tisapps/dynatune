@@ -25,7 +25,7 @@ function waitFor(port, type) {
 
 export async function calibrateEcho(ctx, node, refBus, level = 0.25) {
   const fs = ctx.sampleRate;
-  const total = Math.round(1.2 * fs);
+  const total = Math.round(1.5 * fs);      // Rauschen 0,15 … 0,65 s + bis zu 0,8 s Laufzeit
   node.port.postMessage({ type: 'nlms', enabled: false });
   const recorded = waitFor(node.port, 'recorded');
   node.port.postMessage({ type: 'record', samples: total });
@@ -48,7 +48,7 @@ export async function calibrateEcho(ctx, node, refBus, level = 0.25) {
   const { mic, ref } = await recorded;
   src.disconnect(); g.disconnect();
 
-  const maxLag = Math.round(0.3 * fs);
+  const maxLag = Math.round(0.8 * fs);     // Android: Laufzeit oft 100 … 400 ms
   const c = crossCorrelate(mic, ref, maxLag);
   let peak = 0, lag = 0;
   for (let i = 0; i <= maxLag; i++) if (Math.abs(c[i]) > peak) { peak = Math.abs(c[i]); lag = i; }
@@ -58,13 +58,15 @@ export async function calibrateEcho(ctx, node, refBus, level = 0.25) {
   const echoDb = 10 * Math.log10(em / (er + 1e-20) + 1e-12);
 
   if (strength < 0.04 || em < 1e-6) {
+    node.port.postMessage({ type: 'echoDelay', samples: 0 });
     return { ok: false, reason: 'Kein Echo messbar – vermutlich Kopfhörer. Unterdrückung nicht nötig.', strength, latencyMs: null };
   }
 
   const delay = Math.max(0, lag - PRE_TAPS);
   const { weights, erleDb } = trainNlms(mic, ref, delay, NLMS_TAPS);
   node.port.postMessage({ type: 'nlms', enabled: true, delay, weights, reset: false });
-  return { ok: true, delay, latencyMs: (lag / fs) * 1000, strength, erleDb, echoDb };
+  node.port.postMessage({ type: 'echoDelay', samples: lag });
+  return { ok: true, delay, lag, latencyMs: (lag / fs) * 1000, strength, erleDb, echoDb, weights: Array.from(weights) };
 }
 
 export function trainNlms(mic, ref, delay, L, passes = 4, mu = 0.5) {
@@ -94,26 +96,37 @@ export function trainNlms(mic, ref, delay, L, passes = 4, mu = 0.5) {
 }
 
 // Tonprobe: Referenzklang spielen, Verhältnis Rest-Echo / Referenzpegel bzw.
-// Rest-Echo / NLMS-Echoschätzung messen (Median über 0,25 … 0,55 s)
-export async function probeEcho(ctx, node, ref) {
-  const ratios = [], ks = [];
+// Rest-Echo / NLMS-Echoschätzung messen (Median über 0,25 … 0,55 s nach
+// Ankunft des Echos, also um die Laufzeit verschoben)
+export async function probeEcho(ctx, node, ref, latencyMs = 0) {
+  const lat = (latencyMs || 0) / 1000;
+  const ratios = [], ks = [], steady = [], tail = [];
   const prev = node.port.onmessage;
   const t0 = ctx.currentTime;
+  const tStop = 0.6 + lat;                 // Ton aus; Echo endet ab tStop + lat
   node.port.onmessage = (ev) => {
     const m = ev.data;
     if (m.type !== 'pitch') { if (prev) prev(ev); return; }
     const dt = ctx.currentTime - t0;
-    if (dt < 0.25 || dt > 0.55) return;
-    if (m.refRms > 1e-3) ratios.push(m.rms / m.refRms);
-    if (m.echo > 1e-4) ks.push(m.rms / m.echo);
+    if (dt >= lat + 0.25 && dt <= lat + 0.55) {
+      steady.push(m.rms);
+      if (m.refRms > 1e-3) ratios.push(m.rms / m.refRms);
+      if (m.echo > 1e-4) ks.push(m.rms / m.echo);
+    }
+    if (dt > tStop + lat) tail.push({ t: dt - tStop - lat, rms: m.rms });
   };
   ref.play(440);
   node.port.postMessage({ type: 'ref', f: 440 });
-  await new Promise((r) => setTimeout(r, 600));
+  await new Promise((r) => setTimeout(r, 600 + lat * 1000));
   ref.stop(0.05);
   node.port.postMessage({ type: 'ref', f: 0 });
-  await new Promise((r) => setTimeout(r, 350));     // Echo ausklingen lassen
+  await new Promise((r) => setTimeout(r, 900 + lat * 1000));     // Echo/Hall ausklingen lassen
   node.port.onmessage = prev;
-  const med = (a) => (a.length ? a.sort((x, y) => x - y)[a.length >> 1] : null);
-  return { leakGain: med(ratios), echoK: med(ks) };
+  const med = (a) => (a.length ? [...a].sort((x, y) => x - y)[a.length >> 1] : null);
+  // Nachhall: Zeit, bis das Echo um 30 dB abgefallen ist (Raumhall)
+  const level = med(steady) ?? 0;
+  const last = tail.filter((x) => x.rms > level * 0.0316).pop();
+  const tailMs = last ? Math.min(1000, last.t * 1000) : 0;
+  node.port.postMessage({ type: 'echoDelay', samples: Math.round(lat * ctx.sampleRate), tailSamples: Math.round((tailMs / 1000) * ctx.sampleRate) });
+  return { leakGain: med(ratios), echoK: med(ks), tailMs };
 }

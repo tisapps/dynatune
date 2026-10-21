@@ -39,11 +39,11 @@ await page.click('#start');
 const t0 = Date.now();
 const log = [];
 let shot = false;
-while (Date.now() - t0 < 9000) {
+while (Date.now() - t0 < 10500) {
   const s = await page.evaluate(() => ({ st: window.dynatune.state, n: window.dynatune.currentNote, f: window.dynatune.refFreq, p: window.dynatune.lastPitch, cents: document.getElementById('cents').textContent }));
   const last = log.at(-1);
   if (!last || last.st !== s.st || last.n !== s.n || last.cents.includes('außerhalb') !== s.cents.includes('außerhalb')) log.push({ t: Date.now() - t0, ...s });
-  if (!shot && Date.now() - t0 > 3900) { shot = true; await page.screenshot({ path: path.join(os.tmpdir(), 'dynatune-tracking.png') }); }
+  if (!shot && Date.now() - t0 > 5400) { shot = true; await page.screenshot({ path: path.join(os.tmpdir(), 'dynatune-tracking.png') }); }
   await page.waitForTimeout(10);
 }
 console.log('Stoppsignal:', await page.textContent('#stop-last'));

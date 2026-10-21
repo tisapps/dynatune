@@ -2,7 +2,7 @@
 import math, random, struct, sys, wave
 fs = 48000
 random.seed(5)
-out = [0.0] * int(12 * fs)          # 2,5 s Vorlauf fürs Einmessen
+out = [0.0] * int(13.5 * fs)        # 4 s Vorlauf fürs Einmessen
 def click(at, amp):
     f1, f2, d = 1400 * random.uniform(0.9, 1.1), 2600 * random.uniform(0.9, 1.1), 0.0025 * random.uniform(0.7, 1.3)
     for i in range(int(0.04 * fs)):
@@ -12,8 +12,8 @@ def clap(at, amp):
     for i in range(int(0.06 * fs)):
         t = i / fs
         out[int(at * fs) + i] += amp * math.exp(-t / 0.012) * (random.uniform(-0.5, 0.5) + 0.5 * math.sin(2 * math.pi * 900 * t))
-for k in range(5): click(3.5 + k, 0.25 * random.uniform(0.6, 1.4))
-click(9.0, 0.2); clap(9.8, 0.3); click(10.6, 0.15)
+for k in range(5): click(5.0 + k, 0.25 * random.uniform(0.6, 1.4))
+click(10.5, 0.2); clap(11.3, 0.3); click(12.1, 0.15)
 for i in range(len(out)): out[i] += random.uniform(-0.002, 0.002)
 w = wave.open(sys.argv[1], 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(fs)
 w.writeframes(b''.join(struct.pack('<h', int(max(-1, min(1, v)) * 32767)) for v in out)); w.close()

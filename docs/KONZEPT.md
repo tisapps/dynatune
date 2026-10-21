@@ -2,7 +2,7 @@
 
 **Dynamisches Stimmgerät als Progressive Web App (PWA) für Smartphones**
 
-Stand: 21.10.2026 · Version 1.4 (Lautsprecher-Echo, Einmessen) · Prototyp: Stufe 1 umgesetzt
+Stand: 21.10.2026 · Version 1.5 (Echo-Laufzeit, Raumhall, Diagnose-Aufnahme) · Prototyp: Stufe 1 umgesetzt
 
 ---
 
@@ -28,7 +28,7 @@ Herkömmliche Stimmgeräte zeigen nur an, ob ein Ton zu hoch oder zu tief ist. D
 ## 3. Bedienablauf
 
 1. **Start** antippen und den Mikrofonzugriff erlauben.
-2. Einmalig in den Einstellungen Klang und Kammerton wählen. Beim Start misst die App automatisch das Lautsprecher-Echo ein (≈ 2 s Rauschen und Ton, bitte still sein). Das **Stoppsignal** lässt sich direkt auf dem Hauptbildschirm einlernen (Schaltfläche neben Start); falls nötig, startet das Audio dabei automatisch.
+2. Einmalig in den Einstellungen Klang und Kammerton wählen. Beim Start misst die App automatisch das Lautsprecher-Echo ein (≈ 3 s Rauschen und Ton, bitte still sein). Das **Stoppsignal** lässt sich direkt auf dem Hauptbildschirm einlernen (Schaltfläche neben Start); falls nötig, startet das Audio dabei automatisch.
 3. Ton spielen. Nach rund 20–60 ms (je nach Tonhöhe, siehe Abschnitt 5) setzt die Referenz in sauberer Stimmung ein.
 4. Beim Tonwechsel springt die Referenz mit 20 ms Überblendung mit.
 5. Hört der Musiker auf, klingt die Referenz weiter („Halten“). Ein Balken zeigt die verbleibende Zeit bis zur automatischen Abschaltung.
@@ -118,7 +118,7 @@ Die Ursache zeigt die Simulation: Geige und Referenz-Echo bilden eine Mischung m
 
 **Lösung, mehrstufig:**
 
-1. **Einmessen beim Start** (abschaltbar, jederzeit wiederholbar), Dauer ≈ 2 s, der Musiker ist dabei still:
+1. **Einmessen beim Start** (abschaltbar, jederzeit wiederholbar), Dauer ≈ 3 s, der Musiker ist dabei still:
    - 0,5 s Rauschen über den Lautsprecher. Die Kreuzkorrelation liefert die Echo-Laufzeit, darauf wird das NLMS-Filter trainiert (256 Koeffizienten, Frequenzgang Lautsprecher → Mikrofon). Ohne messbares Echo (Kopfhörer) bleibt die Unterdrückung aus.
    - 0,5 s Tonprobe mit dem Referenzklang: Wie stark ist das Rest-Echo nach der Unterdrückung? Mit dem Filter rechnet die App daraus für **jeden** Ton das zu erwartende Echo aus. Das ist wichtig, weil Handylautsprecher je nach Tonhöhe sehr verschieden laut sind.
    - Das Filter wird danach nicht nachtrainiert. Es bleibt zeitlich konstant, und nur dann funktioniert der Kammfilter (Punkt 2) vollständig.
@@ -129,9 +129,15 @@ Die Ursache zeigt die Simulation: Geige und Referenz-Echo bilden eine Mischung m
    - schwache, aber plausible Tonhöhe im bereinigten Signal (obere Teiltöne)
 
    Die Cent-Anzeige stammt dann aus dem bereinigten Signal. Das Gesamtsignal ist zur Referenz hin verfälscht und wird nur verwendet, wenn das Echo unter 25 % des Spielerpegels liegt; sonst wird die Kugel grau, statt einen geschönten Wert zu zeigen.
-4. **Schutzregeln gegen Artefakte:**
+4. **Echo-Laufzeit:** Auf Android-Geräten braucht der Ton vom Lautsprecher zurück ins Mikrofon oft 100–400 ms. Nach einem Referenzwechsel hört das Mikrofon so lange noch das Echo des **alten** Tons. Version 1.4 schaltete den Kammfilter sofort um. Ab etwa 200 ms Laufzeit hielt die App das alte Echo für einen neuen Ton und schaltete in schneller Folge hin und her (im Praxistest: „spielt die Referenz in wilder Abfolge“).
+   - Seit Version 1.5 schaltet der Audio-Thread den Kammfilter erst um, wenn das Echo des neuen Tons ankommt (um die gemessene Laufzeit verzögert).
+   - Die Notenlogik richtet sich nach dem ankommenden Ton.
+   - Das Einmessen erfasst Laufzeiten bis 800 ms; die Tonprobe misst erst nach Ankunft des Echos.
+5. **Raumhall:** Das Einmessen misst auch, wie lange das Echo nachklingt (Abfall um 30 dB). Nach einem Wechsel läuft für diese Zeit ein zweiter Kammfilter für den alten Ton mit, damit dessen Nachhall sich nicht mit dem Spieler zu Fantasietönen mischt.
+6. **Schutzregeln gegen Artefakte:**
    - Echo des alten Tons nach einem Wechsel (300 ms) bzw. nach dem Stopp (600 ms) ignorieren, in den ersten 150 ms auch als Mischklang (Unterharmonische)
-   - Unterharmonische der Referenz im bereinigten Signal ignorieren, solange das Gesamtsignal auf der Referenz liegt (Vibrato-Artefakt, z. B. A5 → D4)
+   - Unterharmonische der Referenz (jede ganzzahlige, ½ … ⅟ₙ) im bereinigten Signal ignorieren, solange das Gesamtsignal auf der Referenz liegt (Vibrato-Artefakt, z. B. A5 → D4, E6 → A3)
+   - Widerspricht das Gesamtsignal einem Ton aus dem bereinigten Signal, braucht der Wechsel 8 statt 3 Messungen (fängt z. B. 5/4-Fehler ab, wenn untere Teiltöne fehlen)
    - Im Zusammenklang mit der Referenz nur Oktavsprünge nach oben zulassen; nur diese sind im bereinigten Signal unsichtbar
 
 **Gemessen** mit echten Geigen-Samples (16 Töne G3–E6, Legato und abgesetzt, Handy-Lautsprecher simuliert: Laufzeit, Hochpass 450 Hz, Verzerrung, Nachhall):
@@ -148,6 +154,17 @@ Die Ursache zeigt die Simulation: Geige und Referenz-Echo bilden eine Mischung m
 | +6 dB, ohne Einmessen | 0 / 16 | 0 % | 5,2 % |
 
 Reaktionszeit beim Tonwechsel: Median 27 ms, höchstens 95 ms.
+
+Zusätzlich geprüft (synthetische Geige, `test/closedloop.test.mjs`):
+
+| Bedingung | Referenzwechsel zu viel | falsche Note |
+|---|---|---|
+| Laufzeit 300 ms | 0 (Version 1.4: +20) | 0,5 % |
+| Laufzeit 500 ms | 0 (Version 1.4: +40) | 3,6 % (Sprünge 3 : 1 kommen ≈ 300 ms verzögert) |
+| automatische Pegelregelung ±3 dB | 0 | 0 % |
+| Raumhall 0,4 s | 0 | 5 % |
+
+Mit Raumhall und lautem Echo zeigt die App bei exakt gestimmtem, ruhigem Ton oft „Hält“ (s. Grenzen); die Referenz klingt dabei weiter.
 
 Cent-Anzeige nahe der Referenz (gespielt +3/+8/+15/+28/−12 ct): bis +6 dB Echo exakt; bei +10 dB werden Abweichungen unter ≈ 5 ct nicht mehr vom Echo unterschieden, die App geht dann ins Halten.
 
@@ -243,7 +260,8 @@ Sendebus ──▶ Lautsprecher/Kopfhörer  und  ──▶ Worklet-Eingang 2 (NL
 | `js/app.js` | Audio-Aufbau, Einmessen, Gerätewechsel, Bedienung |
 | `js/reference.js` | Referenzton-Engine |
 | `js/display.js` | Grafik |
-| `js/calibrate.js` | Echo-Laufzeit, NLMS-Training, Tonprobe |
+| `js/calibrate.js` | Echo-Laufzeit, NLMS-Training, Tonprobe, Nachhall |
+| `js/diagnose.js` | Diagnose-Aufnahme (WAV + JSON), Teilen/Herunterladen |
 | `js/stopsignal.js` | Merkmale und Vergleich für das Stoppsignal |
 | `js/tuning.js` | Noten, Cent, Namen, Transposition |
 | `sw.js`, `manifest.webmanifest` | Offline-Fähigkeit, Installation |
@@ -257,6 +275,8 @@ Sendebus ──▶ Lautsprecher/Kopfhörer  und  ──▶ Worklet-Eingang 2 (NL
 | `test/stopsignal.test.mjs`, `test/stopchain.test.mjs` | Trennschärfe Stoppsignal, ganze Kette mit lauter Referenz |
 | `test/e2e.mjs` | Browser mit simuliertem Mikrofon; `ECHO=0.5` mischt ein Lautsprecher-Echo ein (Testschalter `?echotest=`) |
 | `test/e2e-train.mjs` | Einlernen und Testmodus im Browser |
+| `test/e2e-diag.mjs` | Diagnose-Aufnahme im Browser, anschließend Nachspielen |
+| `test/replay.mjs` | Diagnose-Aufnahme vom Gerät nachspielen und vergleichen |
 
 **Wichtige Browser-Einstellungen:**
 - Mikrofon mit `echoCancellation`, `noiseSuppression` und `autoGainControl` = aus. Diese Filter würden Tonhöhe und Pegel verfälschen.
@@ -264,17 +284,25 @@ Sendebus ──▶ Lautsprecher/Kopfhörer  und  ──▶ Worklet-Eingang 2 (NL
 - Screen Wake Lock hält den Bildschirm an.
 - Kein Build-Schritt, keine Abhängigkeiten: statisches Hosting genügt (z. B. GitHub Pages). HTTPS ist Pflicht für den Mikrofonzugriff.
 
-## 11. Einstellungen
+## 11. Diagnose-Aufnahme
+
+Unter ⚙ → Diagnose nimmt die App 20 s auf:
+- Mikrofon (unbearbeitet) und gesendete Referenz als WAV (32 bit float, stereo)
+- Protokoll (JSON): Einstellungen, Einmess-Ergebnis inklusive Filterwerten, Gerät, Latenzen, jeder Zustands- und Notenwechsel
+
+Die Dateien lassen sich teilen (Mail, Messenger, Cloud) oder herunterladen. `node test/replay.mjs <datei>.wav` schickt die Aufnahme exakt durch Audio-Thread und Notenlogik und vergleicht die Entscheidungen mit denen auf dem Gerät. Echte Gerätedaten ersetzen damit das Raten über Unterschiede zwischen Simulation und Gerät.
+
+## 12. Einstellungen
 
 Die Einstellungen sind in vier Gruppen gegliedert: Referenzton, Erkennung & Anzeige, Halten & Stoppen, Rückkopplungsschutz. Jede Gruppe ist ein eigener Block mit größerer Überschrift und einer Tabelle mit einer Zeile je Funktion: Bezeichnung links, Regler bzw. Auswahl rechts. **Der Grauton wechselt je Gruppe** (Mittelgrau / Dunkelgrau, im hellen Modus zwei helle Grautöne). Innerhalb einer Gruppe trennen feine Linien die Zeilen.
 
-## 12. Weitere Funktionen
+## 13. Weitere Funktionen
 
 - **Notennamen** deutsch (H, B, Cis) oder international (B, B♭, C♯).
 - **Transposition** für C, B, A, F, Es: Die Anzeige zeigt die notierte Note, die Referenz klingt real.
 - Alle Einstellungen werden lokal gespeichert.
 
-## 13. Ausbaustufen
+## 14. Ausbaustufen
 
 | Stufe | Inhalt | Status |
 |---|---|---|
@@ -283,11 +311,12 @@ Die Einstellungen sind in vier Gruppen gegliedert: Referenzton, Erkennung & Anze
 | 3 | Praxistest auf iPhone und Android-Geräten; Feinabstimmung von Pegeln, Schwellen und NLMS-Länge; Latenzmessung | geplant |
 | 4 | Stimmungssysteme (rein, pythagoreisch, bezogen auf Grundton), Übungsstatistik, Bluetooth-Pedal | Idee |
 
-## 14. Risiken und offene Punkte
+## 15. Risiken und offene Punkte
 
 - **iOS:** Bei aktivem Mikrofon kann Safari die Ausgabe leiser oder über den Hörer ausgeben. Das muss auf echten Geräten geprüft werden. Mit Kopfhörern tritt das Problem nicht auf.
 - **Android-Latenz** schwankt stark je nach Gerät. Die App zeigt den Wert an. Bei hoher Latenz helfen Kopfhörer und das Halten.
 - **Sehr lautes Lautsprecher-Echo** (mehr als ≈ 6–10 dB über dem Instrument): Ein Spieler, der wenige Cent neben der Referenz liegt, ist dann nicht mehr vom Echo zu unterscheiden. Die App geht in dem Fall ins Halten, die Referenz klingt weiter. Abhilfe: Referenz leiser oder Kopfhörer.
-- **Nur simuliert:** Die Echo-Verbesserungen sind mit echten Geigen-Samples und einem simulierten Handy-Lautsprecher geprüft, nicht mit echten Geräten. Ob der Lautsprecher-Fehler nach Bluetooth-Nutzung damit behoben ist, kann nur ein Gerätetest zeigen.
+- **Nur simuliert:** Die Echo-Verbesserungen sind mit echten Geigen-Samples und einem simulierten Handy-Lautsprecher geprüft, nicht mit echten Geräten. Version 1.4 bestand alle Simulationen und versagte trotzdem auf dem Gerät, weil die Simulation 30 ms statt realer 100–400 ms Laufzeit annahm. Deshalb gibt es die Diagnose-Aufnahme (Abschnitt 11). Ob der Lautsprecher-Fehler nach Bluetooth-Nutzung behoben ist, kann nur ein Gerätetest zeigen.
+- **Sprung auf ein Vielfaches der Referenz** (z. B. D4 → A5 = 3 × D4): Der neue Ton ist im bereinigten Signal unsichtbar, bis Vibrato oder Intonation ihn von der Referenz wegbewegen; der Wechsel kann sich um einige hundert Millisekunden verzögern.
 - **Stoppsignal in lauter Umgebung:** Die Schwelle ist einstellbar; Antippen und Zeitabschaltung bleiben immer verfügbar.
 - **Sehr tiefe Instrumente** (Kontrabass, Tuba unter 60 Hz) liegen außerhalb des aktuellen Bereichs. Sie bräuchten ein längeres Fenster und damit mehr Latenz.

@@ -98,6 +98,15 @@
         <p class="small group-hint">Beim Start spielt Dynatune kurz ein Rauschen und einen Ton, um das Echo des Lautsprechers zu messen. Bitte dabei still sein. Mit Kabelkopfhörern ist das Ergebnis „kein Echo“. Bluetooth-Kopfhörer sind wegen ihrer Verzögerung ungeeignet.</p>
       </section>
 
+      <section class="group">
+        <h3>Diagnose</h3>
+        <table class="set"><tbody>
+          <tr><th>Aufnahme</th><td><button id="diag" type="button">Diagnose-Aufnahme (20 s)</button>
+            <p id="diag-info" class="small"></p></td></tr>
+        </tbody></table>
+        <p class="small group-hint">Nimmt 20 s Mikrofon und Referenz auf und erstellt zwei Dateien (WAV und JSON) zum Teilen. Während der Aufnahme normal spielen: mehrere Töne, Pausen, Stoppsignal. Die Dateien bleiben auf dem Gerät, bis du sie selbst teilst.</p>
+      </section>
+
       <p id="latency" class="small"></p>
       <p class="small">Dynatune · Prototyp · <a href="https://github.com/tisapps/dynatune/blob/main/docs/KONZEPT.md" target="_blank" rel="noopener">Konzept</a></p>
     </form>

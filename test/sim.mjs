@@ -21,12 +21,21 @@ function biquadHP(fc) {
 }
 
 // Lautsprecher + Raum: Verzögerung, kaum Bässe, leichte Sättigung, etwas Nachhall
-export function makeSpeaker({ gain = 0.5, delayMs = 30, hp = 450 } = {}) {
+export function makeSpeaker({ gain = 0.5, delayMs = 30, hp = 450, rt60 = 0 } = {}) {
   const d = Math.round((delayMs / 1000) * FS);
   const buf = new Float32Array(1 << 16);
   let w = 0;
   const h1 = biquadHP(hp), h2 = biquadHP(hp);
   const taps = [[0, 1], [37, 0.35], [151, -0.2], [433, 0.12], [977, 0.06]];
+  // Raumhall: zufällige Reflexionen mit exponentiellem Abklingen (−60 dB nach rt60)
+  if (rt60 > 0) {
+    let s = 17;
+    const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647);
+    for (let k = 0; k < 120; k++) {
+      const t = 0.005 + rnd() * rt60;
+      taps.push([Math.round(t * FS), (rnd() * 2 - 1) * 0.5 * 10 ** (-3 * t / rt60)]);
+    }
+  }
   return (x) => {
     buf[w & 0xffff] = x;
     let v = 0;
@@ -47,13 +56,15 @@ export function calibrate(proc, speaker, timbre = 'violine') {
   synth.play(440);
   proc.send({ type: 'ref', f: 440 });
   const mic = new Float32Array(B), ref = new Float32Array(B), out = [[new Float32Array(B)]];
-  const ratios = [], ks = [];
+  const ratios = [], ks = [], steady = [], tailRms = [];
   let s = 5;
-  for (let i = 0; i < 0.5 * FS; i += B) {
+  const lag = nl?.lag ?? 0;           // Messfenster um die Echo-Laufzeit verschieben
+  for (let i = 0; i < 0.5 * FS + lag; i += B) {
     for (let j = 0; j < B; j++) { const r = synth.sample(); ref[j] = r; mic[j] = (speaker ? speaker(r) : 0) + 0.002 * (((s = (s * 16807) % 2147483647) / 2147483647) * 2 - 1); }
     proc.process([[mic], [ref]], out);
     for (const m of proc.port._out.splice(0)) {
-      if (m.type !== 'pitch' || i < 0.2 * FS) continue;
+      if (m.type !== 'pitch' || i < 0.2 * FS + lag) continue;
+      steady.push(m.rms);
       if (m.refRms > 1e-3) ratios.push(m.rms / m.refRms);
       if (m.echo > 1e-4) ks.push(m.rms / m.echo);
     }
@@ -61,20 +72,28 @@ export function calibrate(proc, speaker, timbre = 'violine') {
   // Ausklingen lassen
   synth.stop();
   proc.send({ type: 'ref', f: 0 });
-  for (let i = 0; i < 0.4 * FS; i += B) { for (let j = 0; j < B; j++) { ref[j] = synth.sample(); mic[j] = speaker ? speaker(ref[j]) : 0; } proc.process([[mic], [ref]], out); proc.port._out.length = 0; }
+  for (let i = 0; i < 0.9 * FS + lag; i += B) {
+    for (let j = 0; j < B; j++) { ref[j] = synth.sample(); mic[j] = speaker ? speaker(ref[j]) : 0; }
+    proc.process([[mic], [ref]], out);
+    for (const m of proc.port._out.splice(0)) if (m.type === 'pitch' && i >= lag) tailRms.push({ t: (i - lag) / FS, rms: m.rms });
+  }
   const med = (a) => (a.length ? a.sort((x, y) => x - y)[a.length >> 1] : null);
-  return { ...nl, leakGain: med(ratios), echoK: med(ks) };
+  const level = med([...steady]) ?? 0;
+  const last = tailRms.filter((x) => x.rms > level * 0.0316).pop();
+  const tailMs = speaker && last ? Math.min(1000, last.t * 1000) : 0;
+  proc.send({ type: 'echoDelay', samples: lag, tailSamples: Math.round((tailMs / 1000) * FS) });
+  return { ...nl, leakGain: med(ratios), echoK: med(ks), tailMs };
 }
 
 function calibrateNlms(proc, speaker) {
-  const n = Math.round(1.2 * FS);
+  const n = Math.round(1.8 * FS);
   const ref = new Float32Array(n), mic = new Float32Array(n);
   let s = 7;
   for (let i = Math.round(0.15 * FS); i < Math.round(0.65 * FS); i++) ref[i] = 0.25 * (((s = (s * 16807) % 2147483647) / 2147483647) * 2 - 1);
   for (let i = 0; i < n; i++) mic[i] = speaker(ref[i]);
   // Laufzeit per Kreuzkorrelation (grob, direkt)
   let best = 0, lag = 0;
-  for (let L = 0; L < 0.2 * FS; L += 1) {
+  for (let L = 0; L < 0.8 * FS; L += 1) {
     let c = 0;
     for (let i = Math.round(0.15 * FS); i < Math.round(0.45 * FS); i += 4) c += mic[i + L] * ref[i];
     if (Math.abs(c) > best) { best = Math.abs(c); lag = L; }
@@ -82,7 +101,8 @@ function calibrateNlms(proc, speaker) {
   const delay = Math.max(0, lag - 32);
   const { weights, erleDb } = trainNlms(mic, ref, delay, 256);
   proc.send({ type: 'nlms', enabled: true, delay, weights });
-  return { delay, erleDb };
+  proc.send({ type: 'echoDelay', samples: lag });
+  return { delay, erleDb, lag };
 }
 
 // Referenz-Synthese wie ReferenceEngine (Teiltöne, Einschwingen, Überblendung)
@@ -118,6 +138,7 @@ export function simulate(player, {
   a4 = 440, octave = 0, sensitivity = 6, holdSec = 20, timbre = 'violine',
   leak = null, nlms = false, calib = true, noise = 0.002, onBlock = null,
   stopTemplate = null, stopThreshold = 0.5,
+  agc = 0,          // automatische Pegelregelung des Handys: Schwankung ±agc dB (≈ 0,7 Hz)
 } = {}) {
   const proc = loadProcessor(FS);
   const speaker = leak ? makeSpeaker(leak) : null;
@@ -140,7 +161,7 @@ export function simulate(player, {
     refFreq: () => synth.freq,
     show() {}, readout() {},
   };
-  const tracker = new Tracker(io, { a4, sensitivity, holdSec, leakGain: cal?.leakGain, echoK: nlms ? cal?.echoK : null });
+  const tracker = new Tracker(io, { a4, sensitivity, holdSec, leakGain: cal?.leakGain, echoK: nlms ? cal?.echoK : null, tailMs: cal?.tailMs ?? 0 });
   const mic = new Float32Array(B), ref = new Float32Array(B), out = [[new Float32Array(B)]];
   let seed = 3;
   const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) * 2 - 1;
@@ -151,7 +172,8 @@ export function simulate(player, {
       const r = synth.sample();
       ref[j] = r;
       const l = speaker ? speaker(r) : 0;
-      mic[j] = player[i + j] + l + noise * rnd();
+      const g = agc ? 10 ** ((agc * Math.sin(2 * Math.PI * 0.7 * (i + j) / FS)) / 20) : 1;
+      mic[j] = g * (player[i + j] + l) + noise * rnd();
       if (r !== 0) { eL += l * l; eP += player[i + j] * player[i + j]; }
     }
     proc.process([[mic], [ref]], out);

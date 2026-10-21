@@ -178,6 +178,14 @@ class DynatuneProcessor extends AudioWorkletProcessor {
     this.ringP = new Float32Array(RING);
     this.refPeriod = 0;
     this.refEnergy = 0;
+    this.rfArr = 0;               // Referenzfrequenz, deren Echo gerade ankommt
+    // zweiter Kammfilter für den Nachhall des vorigen Tons (nach einem Wechsel)
+    this.ringQ = new Float32Array(RING);
+    this.prevComb = null;         // { coef, base, until }
+    this.tailSamples = 0;         // gemessener Nachhall (Samples)
+    this.refQueue = [];
+    this.echoDelay = 0;           // Echo-Laufzeit in Samples
+    this.frame = 0;
 
     // Hochpass (Gleichanteil)
     this.dcX = 0; this.dcY = 0;
@@ -189,7 +197,7 @@ class DynatuneProcessor extends AudioWorkletProcessor {
     this.L = 256;
     this.delay = 0;
     this.w = new Float32Array(this.L);
-    this.refBufSize = 16384;
+    this.refBufSize = 65536;      // ≥ längste Echo-Laufzeit (≈ 1,3 s bei 48 kHz)
     this.refBuf = new Float32Array(this.refBufSize * 2); // doppelt, vermeidet Modulo
     this.refPos = 0;
     this.refPow = 0;              // laufende Leistung im Filterfenster
@@ -233,13 +241,21 @@ class DynatuneProcessor extends AudioWorkletProcessor {
         if (m.gate !== undefined) this.clickGate = m.gate;
         break;
       case 'ref':
-        this.combDelay = this.pickCombDelay(m.f);
-        this.refPeriod = m.f > 0 ? this.fs / m.f : 0;
-        if (this.refPeriod > 0) this.makeCombCoef(this.refPeriod);
-        this.stComb.stable = 0;
+        // Kammfilter erst umschalten, wenn das Echo des neuen Tons am Mikrofon
+        // ankommt (Laufzeit Lautsprecher → Mikrofon, beim Einmessen bestimmt).
+        // Bis dahin hört das Mikrofon noch das Echo des alten Tons.
+        this.refQueue.push({ at: this.frame + this.echoDelay, f: m.f });
+        break;
+      case 'echoDelay':
+        this.echoDelay = Math.max(0, Math.min(this.refBufSize - 1, m.samples | 0));
+        if (m.tailSamples !== undefined) this.tailSamples = Math.max(0, m.tailSamples | 0);
         break;
       case 'record':
         this.rec = { mic: new Float32Array(m.samples), ref: new Float32Array(m.samples), pos: 0 };
+        break;
+      case 'diag':
+        // Diagnose-Aufnahme: Mikrofon (unbearbeitet) und gesendete Referenz
+        this.diag = { mic: new Float32Array(m.samples), ref: new Float32Array(m.samples), pos: 0 };
         break;
     }
   }
@@ -248,6 +264,8 @@ class DynatuneProcessor extends AudioWorkletProcessor {
     const mic = inputs[0] && inputs[0][0];
     const ref = inputs[1] && inputs[1][0];
     const n = mic ? mic.length : 128;
+    while (this.refQueue.length && this.refQueue[0].at <= this.frame) this.applyRef(this.refQueue.shift().f);
+    this.frame += n;
     const L = this.L, w = this.w, size = this.refBufSize, rb = this.refBuf;
     let blockEnergy = 0;
     if (this.nlmsOn) {
@@ -265,10 +283,21 @@ class DynatuneProcessor extends AudioWorkletProcessor {
       this.dcX = xin; this.dcY = x;
 
       const r = ref ? ref[i] : 0;
-      this.refEnergy = 0.999 * this.refEnergy + 0.001 * r * r;
+      // Pegel der Referenz, wie sie gerade als Echo ankommt (um die Laufzeit verzögert)
+      const ra = this.echoDelay > 0 ? rb[this.refPos - this.echoDelay + size] : r;
+      this.refEnergy = 0.999 * this.refEnergy + 0.001 * ra * ra;
       // Referenz im doppelten Ringpuffer ablegen
       const p = this.refPos;
       rb[p] = r; rb[p + size] = r;
+
+      if (this.diag) {
+        const dg = this.diag;
+        dg.mic[dg.pos] = xin; dg.ref[dg.pos] = r; dg.pos++;
+        if (dg.pos >= dg.mic.length) {
+          this.port.postMessage({ type: 'diagDone', mic: dg.mic, ref: dg.ref, fs: this.fs }, [dg.mic.buffer, dg.ref.buffer]);
+          this.diag = null;
+        }
+      }
 
       if (this.rec) {
         const rc = this.rec;
@@ -323,7 +352,16 @@ class DynatuneProcessor extends AudioWorkletProcessor {
         const c = this.combCoef, base = this.ringPos - this.combBase + RING, R = this.ring;
         let d = 0;
         for (let k = 0; k < c.length; k++) d += c[k] * R[(base + k) % RING];
-        this.ringP[this.ringPos] = e - d;
+        const c1 = e - d;
+        this.ringP[this.ringPos] = c1;
+        const pc = this.prevComb;
+        if (pc) {
+          // zweite Stufe: Nachhall des vorigen Tons entfernen
+          const b2 = this.ringPos - pc.base + RING, R2 = this.ringP;
+          let d2 = 0;
+          for (let k = 0; k < pc.coef.length; k++) d2 += pc.coef[k] * R2[(b2 + k) % RING];
+          this.ringQ[this.ringPos] = c1 - d2;
+        }
       }
       this.ringPos = (this.ringPos + 1) % RING;
       const h = this.hp;
@@ -353,6 +391,20 @@ class DynatuneProcessor extends AudioWorkletProcessor {
     const out = outputs[0] && outputs[0][0];
     if (out) out.fill(0);
     return true;
+  }
+
+  applyRef(f) {
+    // Nachhall des bisherigen Tons: dessen Kammfilter noch eine Weile mitlaufen lassen
+    if (this.refPeriod > 0 && f > 0 && this.tailSamples > 0) {
+      this.prevComb = { coef: this.combCoef, base: this.combBase, until: this.frame + this.tailSamples + Math.round(0.15 * this.fs) };
+    } else {
+      this.prevComb = null;
+    }
+    this.rfArr = f > 0 ? f : 0;
+    this.combDelay = this.pickCombDelay(f);
+    this.refPeriod = f > 0 ? this.fs / f : 0;
+    if (this.refPeriod > 0) this.makeCombCoef(this.refPeriod);
+    this.stComb.stable = 0;
   }
 
   // Interpolationskoeffizienten für den Wert x(n - P), P = i0 + u (gebrochen).
@@ -455,12 +507,14 @@ class DynatuneProcessor extends AudioWorkletProcessor {
     const msg = {
       type: 'pitch', f: raw.f, clarity: raw.clarity, rms: raw.rms, precise: raw.precise,
       refRms: Math.sqrt(this.refEnergy),
+      rfArr: this.rfArr,
       echo: this.nlmsOn ? Math.sqrt(this.yShort) : 0,   // NLMS-Schätzung des Echos für den aktuellen Ton
       t: currentTime,
     };
     // Zusätzlich auf dem Signal ohne Referenz-Echo (Kammfilter über eine Referenzperiode)
+    if (this.prevComb && this.frame > this.prevComb.until) this.prevComb = null;
     if (this.refPeriod > 0) {
-      const c = this.detect(this.ringP, this.stComb);
+      const c = this.detect(this.prevComb ? this.ringQ : this.ringP, this.stComb);
       msg.fc = c.f; msg.cc = c.clarity; msg.rmsC = c.rms;
     }
     this.port.postMessage(msg);

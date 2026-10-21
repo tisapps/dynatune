@@ -30,6 +30,11 @@ const scenarios = [
   ['Lautsprecher leise', { leak: { gain: 0.25 }, nlms: true }, { maxHold: 2, maxWrong: 1 }],
   ['Lautsprecher mittel', { leak: { gain: 0.5 }, nlms: true }, { maxHold: 3, maxWrong: 1 }],
   ['Lautsprecher laut', { leak: { gain: 1.0 }, nlms: true }, { maxHold: 25, maxWrong: 6, info: true }],
+  // Android: lange Laufzeit Lautsprecher → Mikrofon (vorher: Referenz „schlingert“)
+  ['mittel, Laufzeit 300 ms', { leak: { gain: 0.5, delayMs: 300 }, nlms: true }, { maxHold: 3, maxWrong: 2, maxSwitch: 0 }],
+  ['mittel, Laufzeit 500 ms', { leak: { gain: 0.5, delayMs: 500 }, nlms: true }, { maxHold: 3, maxWrong: 4, maxSwitch: 0 }],   // Sprünge 3:1 kommen ~300 ms verzögert
+  ['mittel, Pegelregelung ±3 dB', { leak: { gain: 0.5 }, nlms: true, agc: 3 }, { maxHold: 3, maxWrong: 1, maxSwitch: 0 }],
+  ['mittel, Raumhall 0,4 s', { leak: { gain: 0.5, rt60: 0.4 }, nlms: true }, { maxHold: 35, maxWrong: 1, maxSwitch: 1, info: true }],
   ['mittel, ohne Einmessung', { leak: { gain: 0.5 }, calib: false }, { maxHold: 10, maxWrong: 2, info: true }],
 ];
 let fails = 0;
@@ -45,9 +50,10 @@ for (const [name, opt, lim] of scenarios) {
   const stopped = log.find((e) => e.ev === 'stop' && e.reason === 'signal' && e.t > end + 1.1);
   // nach dem Stopp darf das ausklingende Echo die Referenz nicht neu starten
   const restarted = stopped && log.some((e) => e.ev === 'note' && e.t > stopped.t && e.t < stopped.t + 1.5);
-  const ok = missed === 0 && wrong <= lim.maxWrong && held <= lim.maxHold && holdAtEnd && !!stopped && !restarted;
+  const extra = log.filter((e) => e.ev === 'note').length - MEL.length;
+  const ok = (lim.maxSwitch == null || extra <= lim.maxSwitch) && missed === 0 && wrong <= lim.maxWrong && held <= lim.maxHold && holdAtEnd && !!stopped && !restarted;
   if (!ok && !lim.info) fails++;
-  console.log(`${name.padEnd(27)} Echo/Geige ${isFinite(echoDb) ? (echoDb >= 0 ? '+' : '') + echoDb.toFixed(0).padStart(2) + ' dB' : '   –  '}  verpasst ${missed}/${r.length}  falsch ${wrong.toFixed(1)} % (Oktave ${oct.toFixed(1)} %)  ` +
+  console.log(`${name.padEnd(29)} Wechsel +${String(extra).padEnd(2)} Echo/Geige ${isFinite(echoDb) ? (echoDb >= 0 ? '+' : '') + echoDb.toFixed(0).padStart(2) + ' dB' : '   –  '}  verpasst ${missed}/${r.length}  falsch ${wrong.toFixed(1)} % (Oktave ${oct.toFixed(1)} %)  ` +
     `Latenz Median ${lat[lat.length >> 1]} ms  fälschlich Halten ${held.toFixed(1)} %  Halten am Ende ${holdAtEnd ? 'ja' : 'NEIN'}  ` +
     `Stoppsignal ${stopped ? 'ja' : 'NEIN'}${restarted ? ' (Neustart durch Echo!)' : ''}${ok ? '' : lim.info ? '  (nur Info)' : '  ✗'}`);
 }

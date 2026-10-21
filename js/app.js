@@ -7,6 +7,7 @@ import { TunerDisplay } from './display.js';
 import { calibrateEcho, probeEcho } from './calibrate.js';
 import { features, buildTemplate, score, isValidTemplate } from './stopsignal.js';
 import { Tracker, gateFor } from './tracker.js';
+import { DiagRecorder, wavFloat32Stereo, shareOrDownload } from './diagnose.js';
 
 // ---------- Einstellungen ----------
 const DEFAULTS = {
@@ -52,6 +53,7 @@ let calib = null;            // Ergebnis des Einmessens (nur für diese Sitzung)
 let training = null;
 let wakeLock = null;
 let starting = false;
+const diag = new DiagRecorder();
 
 const $ = (id) => document.getElementById(id);
 const display = new TunerDisplay($('meter'));
@@ -186,9 +188,11 @@ const trackerIO = {
   startReference(note) {
     ref.play(freqFromMidi(note + S.octave, S.a4));
     node.port.postMessage({ type: 'ref', f: ref.freq });
+    diag.event('note', { note, f: ref.freq });
     renderReference(note);
   },
   stopReference(reason) {
+    diag.event('stop', { reason });
     ref?.stop(reason === 'signal' ? 0.08 : 0.4);
     node?.port.postMessage({ type: 'ref', f: 0 });
     renderReference(null);
@@ -196,6 +200,7 @@ const trackerIO = {
     display.reset();
   },
   setState(s) {
+    diag.event('state', { s });
     if (mode === 'run') showState(s);
     // im Halten ist der Cent-Wert nicht mehr aktuell
     if (s === 'hold') { display.push(null, performance.now() / 1000); $('cents').classList.add('gray'); }
@@ -218,6 +223,7 @@ function onTransient(m) {
   }
   if (mode === 'run' && S.stopTemplate && tracker?.stopSignalAllowed(performance.now())) {
     const sc = score(S.stopTemplate, f);
+    diag.event('transient', { score: +sc.toFixed(3) });
     const pct = `${(sc * 100).toFixed(0)} %`;
     $('stop-last').textContent = `letzte Erkennung: ${pct}`;
     if (sc >= S.stopThreshold) {
@@ -387,18 +393,53 @@ async function runCalibration(auto = false) {
   $('echo-info').textContent = 'Misst ein … bitte kurz still sein.';
   try {
     const r = await calibrateEcho(ctx, node, refBus);
-    const p = await probeEcho(ctx, node, ref);
+    const p = await probeEcho(ctx, node, ref, r.ok ? r.latencyMs : 0);
     calib = { ...r, ...p };
     tracker.leakGain = p.leakGain;
     tracker.echoK = r.ok ? p.echoK : null;
+    tracker.tailMs = r.ok ? p.tailMs : 0;
     $('echo-info').textContent = r.ok
-      ? `Echo-Laufzeit ${r.latencyMs.toFixed(0)} ms · Unterdrückung ${r.erleDb.toFixed(0)} dB`
+      ? `Echo-Laufzeit ${r.latencyMs.toFixed(0)} ms · Nachhall ${p.tailMs.toFixed(0)} ms · Unterdrückung ${r.erleDb.toFixed(0)} dB`
       : 'Kein Echo messbar (Kopfhörer) – keine Unterdrückung nötig.';
   } catch (e) {
     $('echo-info').textContent = 'Einmessen fehlgeschlagen: ' + e.message;
   }
   btn.disabled = false;
   if (ctx) setMode('run');
+}
+
+// ---------- Diagnose-Aufnahme ----------
+const DIAG_SEC = Number(new URLSearchParams(location.search).get('diagsec')) || 20;   // ?diagsec= nur für Tests
+async function runDiagnosis() {
+  if (!ctx) await start();
+  if (!ctx || diag.active) return;
+  const btn = $('diag');
+  btn.disabled = true;
+  $('settings').close();
+  toast(`Diagnose läuft ${DIAG_SEC} s: ein paar Töne spielen, Pausen machen, Stoppsignal geben.`);
+  const t0 = performance.now();
+  const tick = setInterval(() => {
+    const left = Math.max(0, DIAG_SEC - (performance.now() - t0) / 1000);
+    $('diag-info').textContent = `Aufnahme läuft … noch ${Math.ceil(left)} s`;
+    $('status').textContent = `Diagnose · ${Math.ceil(left)} s`;
+  }, 250);
+  const meta = {
+    app: 'dynatune', version: 6, date: new Date().toISOString(), userAgent: navigator.userAgent,
+    sampleRate: ctx.sampleRate, baseLatency: ctx.baseLatency ?? null, outputLatency: ctx.outputLatency ?? null,
+    settings: { ...S }, calib,
+    initial: { note: currentNote(), refFreq: ref?.freq ?? 0, state: tracker?.state ?? mode },
+  };
+  const res = await diag.start(node, ctx, DIAG_SEC, meta);
+  clearInterval(tick);
+  const stamp = meta.date.replace(/[-:]/g, '').slice(0, 15);
+  const files = [
+    new File([wavFloat32Stereo(res.mic, res.ref, res.fs)], `dynatune-diagnose-${stamp}.wav`, { type: 'audio/wav' }),
+    new File([JSON.stringify({ ...res.meta, log: res.log }, null, 1)], `dynatune-diagnose-${stamp}.json`, { type: 'application/json' }),
+  ];
+  const how = await shareOrDownload(files);
+  $('diag-info').textContent = `Aufnahme ${how} (${files.map((f) => f.name).join(', ')}).`;
+  btn.disabled = false;
+  if (mode === 'run' && tracker) showState(tracker.state);
 }
 
 // ---------- Bedienelemente ----------
@@ -448,6 +489,7 @@ $('meter').addEventListener('click', () => stopReferenceNow('tap'));
 $('open-settings').addEventListener('click', () => $('settings').showModal());
 $('close-settings').addEventListener('click', () => $('settings').close());
 $('calibrate').addEventListener('click', () => runCalibration(false));
+$('diag').addEventListener('click', runDiagnosis);
 $('train').addEventListener('click', startTraining);
 $('train-main').addEventListener('click', startTraining);
 $('train-cancel').addEventListener('click', () => { cancelTraining(); $('train-dialog').close(); });

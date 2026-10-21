@@ -16,7 +16,7 @@ def click(amp=0.6):
     for i in range(n):
         out.append(amp * math.exp(-i / (0.002 * fs)) * (random.random() * 2 - 1))
 c = lambda f, ct: f * 2 ** (ct / 1200)
-silence(3.0)                  # Zeit für das Einmessen beim Start
+silence(4.5)                  # Zeit für das Einmessen beim Start
 tone(c(440, 5), 1.0)          # A4 +5 ct
 tone(c(493.88, -12), 0.5)     # H4 -12 ct (Tonwechsel)
 tone(c(493.88, 28), 0.4)      # H4 +28 ct → Graubereich

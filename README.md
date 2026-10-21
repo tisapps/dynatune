@@ -28,7 +28,7 @@ Auf dem Smartphone ist **HTTPS nötig**, weil der Mikrofonzugriff sonst blockier
 
 Tipps:
 - Am besten Kabelkopfhörer verwenden, einseitig getragen.
-- Beim Start misst die App rund 2 s lang das Lautsprecher-Echo ein (Rauschen und ein Ton) – bitte dabei still sein.
+- Beim Start misst die App rund 3 s lang das Lautsprecher-Echo ein (Rauschen und ein Ton) – bitte dabei still sein.
 - Bluetooth-Kopfhörer sind wegen ihrer Verzögerung ungeeignet.
 
 ## Tests
@@ -41,4 +41,14 @@ node test/stopchain.test.mjs    # Stoppsignal-Kette mit laut mitklingender Refer
 node test/e2e.mjs               # Browser-Test mit simuliertem Mikrofon (Playwright + Chromium)
 ECHO=0.5 node test/e2e.mjs      # dasselbe mit simuliertem Lautsprecher-Echo (?echotest=0.5)
 node test/e2e-train.mjs         # Browser-Test Einlernen + Testmodus
+node test/e2e-diag.mjs          # Browser-Test Diagnose-Aufnahme + Nachspielen
+```
+
+## Diagnose
+
+In der App unter ⚙ → Diagnose: nimmt 20 s Mikrofon und Referenz auf und erstellt eine WAV- und eine JSON-Datei zum Teilen. Nachspielen:
+
+```sh
+node test/replay.mjs dynatune-diagnose-XXXX.wav           # Entscheidungen Gerät vs. Code
+node test/replay.mjs dynatune-diagnose-XXXX.wav --frames  # alle Messwerte (alle 20 ms)
 ```

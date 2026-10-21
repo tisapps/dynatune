@@ -8,7 +8,7 @@ export function violinNote(midi, dur, { cents = 0, a4 = 440, vibrato = 15, seed 
   const h = [1, 0.7, 0.55, 0.5, 0.35, 0.3, 0.32, 0.2, 0.15, 0.12, 0.1, 0.08, 0.06, 0.05, 0.04, 0.03];
   let s = seed * 9973 + 1;
   const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647) * 2 - 1;
-  const phs = h.map(() => Math.random() * 6.28);
+  const phs = h.map(() => (rnd() + 1) * 3.14);   // zufällig, aber reproduzierbar
   let ph = 0, nz = 0;
   const vibStart = 0.25 * FS;
   for (let i = 0; i < n; i++) {

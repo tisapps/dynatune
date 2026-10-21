@@ -27,6 +27,7 @@ const SILENCE_MS = 120;             // so lange kein Ton → Haltezustand
 const CLARITY_MIN = 0.8;
 const FAMILY_CENTS = 1.2;           // so nah an Referenz (oder Vielfachen) = Echo der Referenz
 const PREV_REF_MS = 300;            // nach Tonwechsel: Echo des alten Referenztons ignorieren
+const TAIL_MAX_MS = 700;            // erweiterter Schutz höchstens so lange (Raumhall)
 const STOP_ECHO_MS = 600;           // nach Stopp: Echo des ausklingenden Tons ignorieren
 const PREV_SUB_MS = 150;            // … und dessen Unterharmonische (Mischklänge mit dem Spieler)
 const LEAK_FACTOR = 1.8;            // Mikrofon > 1,8 × erwartetes Echo → Musiker spielt
@@ -43,6 +44,13 @@ function inFamily(f, rf, tol = FAMILY_CENTS) {
     if (Math.abs(centsBetween(f, rf / k)) < tol) return true;
   }
   return false;
+}
+
+// f ≈ rf / k für eine ganze Zahl k ≥ 2 (±50 Cent)?
+function isSubharmonic(f, rf) {
+  if (!f || !rf || f >= rf * 0.75) return false;
+  const k = Math.round(rf / f);
+  return k >= 2 && Math.abs(centsBetween(f * k, rf)) < 50;
 }
 
 export class Tracker {
@@ -62,6 +70,9 @@ export class Tracker {
     this.prevRef = { f: 0, from: 0, until: 0 };
     this.toneless = 0;              // Messungen „Musiker aktiv, aber Tonhöhe unklar“ in Folge
     this.holdEndedAt = -Infinity;
+    this.tailMs = settings.tailMs ?? 0;  // gemessener Nachhall des Echos (Raumhall)
+    this.arrivalKnown = false;      // meldet das Worklet den ankommenden Referenzton?
+    this.lastArr = 0;
     this.lastPitch = null;
   }
 
@@ -74,8 +85,10 @@ export class Tracker {
   }
 
   startReference(note, now) {
-    const old = this.io.refFreq();
-    if (old) this.prevRef = { f: old, from: now, until: now + PREV_REF_MS };
+    if (!this.arrivalKnown) {
+      const old = this.io.refFreq();
+      if (old) this.prevRef = { f: old, from: now, until: now + PREV_REF_MS };
+    }
     this.currentNote = note;
     this.io.startReference(note);
   }
@@ -83,7 +96,7 @@ export class Tracker {
   stopReference(reason, now) {
     // ausklingendes Echo des gestoppten Tons darf nicht als neuer Ton gelten
     const old = this.io.refFreq();
-    if (old) this.prevRef = { f: old, from: now, until: now + STOP_ECHO_MS };
+    if (old && !this.arrivalKnown) this.prevRef = { f: old, from: now, until: now + STOP_ECHO_MS };
     this.currentNote = null;
     this.io.stopReference(reason);
     if (this.state === 'hold' || this.state === 'tracking') this.setState('idle', now);
@@ -116,9 +129,7 @@ export class Tracker {
   // dass das Gesamtsignal weiter auf der Referenz liegt. Ein echter Sprung nach
   // unten (A5 → A4) zeigt sich dagegen auch im Gesamtsignal.
   subharmonicArtifact(m, rf) {
-    let sub = false;
-    for (let k = 2; k <= 4 && !sub; k++) sub = Math.abs(centsBetween(m.fc, rf / k)) < 50;
-    if (!sub) return false;
+    if (!isSubharmonic(m.fc, rf)) return false;
     if (!(m.f > 0 && m.clarity >= CLARITY_MIN)) return true;
     const nearRef = Math.abs(centsBetween(m.f, rf)) < 50 ||
       (this.currentNote != null && Math.abs(analyzeFreq(m.f, this.S.a4).note - this.currentNote) === 0);
@@ -130,7 +141,9 @@ export class Tracker {
   //         'unison' – Musiker spielt den Referenzton/dessen Oktave (nur über Pegel erkannt)
   perceive(m, now) {
     const gate = gateFor(this.S.sensitivity);
-    const rf = this.io.refFreq();
+    // maßgeblich ist der Ton, dessen Echo gerade am Mikrofon ankommt (bei langer
+    // Laufzeit noch der vorige) – das meldet das Worklet; sonst der gesendete
+    const rf = m.rfArr !== undefined ? m.rfArr : this.io.refFreq();
     const a4 = this.S.a4;
 
     // Echo des alten Referenztons kurz nach einem Wechsel/Stopp – auch als Mischklang
@@ -139,9 +152,9 @@ export class Tracker {
       if (now >= this.prevRef.until) return false;
       if (inFamily(f, this.prevRef.f)) return true;
       // in den ersten 150 ms ist das abklingende Echo durch den Spieler leicht verfälscht
-      if (now < this.prevRef.from + PREV_SUB_MS) {
+      if (now < this.prevRef.from + (this.prevRef.wide ?? PREV_SUB_MS)) {
         if (inFamily(f, this.prevRef.f, 20)) return true;
-        for (let k = 2; k <= 4; k++) if (Math.abs(centsBetween(f, this.prevRef.f / k)) < 50) return true;
+        if (isSubharmonic(f, this.prevRef.f)) return true;
       }
       return false;
     };
@@ -160,7 +173,13 @@ export class Tracker {
     //    der Referenz, bleibt nur ein schwacher Rest (unsichere Oktave).
     if (m.fc > 0 && m.cc >= CLARITY_MIN && m.rmsC >= gate * 0.5 && m.rmsC >= COMB_SHARE * playerRms &&
         !inFamily(m.fc, rf, 0.6) && !oldEcho(m.fc) && !this.subharmonicArtifact(m, rf)) {
-      return { ...analyzeFreq(m.fc, a4), f: m.fc, kind: 'free' };
+      const c = analyzeFreq(m.fc, a4);
+      // widerspricht das Gesamtsignal (eindeutiger anderer Ton, kein Echo)? Dann
+      // braucht der Wechsel länger – fängt Ausrutscher der Erkennung im
+      // Kammfilter-Signal ab (z. B. 5/4 der Frequenz, wenn untere Teiltöne fehlen)
+      const rawOk = m.f > 0 && m.clarity >= CLARITY_MIN && !inFamily(m.f, rf) && !oldEcho(m.f);
+      const disputed = rawOk && analyzeFreq(m.f, a4).note !== c.note;
+      return { ...c, f: m.fc, kind: 'free', src: 'comb', disputed };
     }
 
     // 2. Spielt der Musiker zusätzlich zum Echo (im Zusammenklang mit der Referenz)?
@@ -213,6 +232,16 @@ export class Tracker {
 
   pitch(m, now) {
     this.lastMsg = m;            // für Fehlersuche
+    // Wechsel des ankommenden Echos: ab jetzt klingt das alte Echo aus
+    if (m.rfArr !== undefined) {
+      this.arrivalKnown = true;
+      if (m.rfArr !== this.lastArr) {
+        const base = m.rfArr ? PREV_REF_MS : STOP_ECHO_MS;
+        const tail = Math.min(TAIL_MAX_MS, this.tailMs);
+        if (this.lastArr) this.prevRef = { f: this.lastArr, from: now, until: now + Math.max(base, tail + 150), wide: Math.max(PREV_SUB_MS, tail) };
+        this.lastArr = m.rfArr;
+      }
+    }
     if (this.state === 'hold' && now - this.holdStart > 150) {
       // nur lernen, solange kein Spieler im Kammfilter-Signal auftaucht
       if (!(m.fc > 0 && m.cc >= CLARITY_MIN && m.rmsC >= gateFor(this.S.sensitivity) * 0.5)) this.learnLeak(m);
@@ -230,7 +259,7 @@ export class Tracker {
         const c = this.candidate;
         this.candidate = c.note === p.note ? { note: p.note, count: c.count + 1 } : { note: p.note, count: 1 };
         const octaveOnly = this.currentNote != null && p.note !== this.currentNote && (p.note - this.currentNote) % 12 === 0;
-        const need = octaveOnly ? OCTAVE_FRAMES : STABLE_FRAMES;
+        const need = octaveOnly || p.disputed ? OCTAVE_FRAMES : STABLE_FRAMES;
         // Im Zusammenklang mit der Referenz nur Oktavwechsel zulassen (gleiche Tonklasse)
         const allowed = p.kind === 'free' || octaveOnly || p.note === this.currentNote;
         if (allowed && this.candidate.count >= need) {
