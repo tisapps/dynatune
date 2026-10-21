@@ -11,7 +11,7 @@ Konzept und Messwerte: [docs/KONZEPT.md](docs/KONZEPT.md)
 - Erkennungsbreite ±20 Cent; im Graubereich spielt die Referenz weiter
 - Halten nach Spielende, bis Stoppsignal, Antippen oder automatische Abschaltung (5–60 s)
 - Stoppsignal (z. B. Zungenschnalzen) einlernen, direkt vom Hauptbildschirm
-- Rückkopplungsschutz per NLMS-Echounterdrückung mit Kalibrierung
+- Einmessen des Lautsprecher-Echos beim Start; Tonerkennung auf einem echobereinigten Signal (Kammfilter über die Referenzperiode), dadurch zuverlässig auch ohne Kopfhörer
 - Kammerton 415–446 Hz, Oktave tiefer, deutsche oder internationale Notennamen, Transposition (B, A, F, Es)
 - Offline-fähig und installierbar (Service Worker, Manifest)
 
@@ -28,15 +28,17 @@ Auf dem Smartphone ist **HTTPS nötig**, weil der Mikrofonzugriff sonst blockier
 
 Tipps:
 - Am besten Kabelkopfhörer verwenden, einseitig getragen.
-- Ohne Kopfhörer einmal „Echo kalibrieren“ ausführen.
+- Beim Start misst die App rund 2 s lang das Lautsprecher-Echo ein (Rauschen und ein Ton) – bitte dabei still sein.
 - Bluetooth-Kopfhörer sind wegen ihrer Verzögerung ungeeignet.
 
 ## Tests
 
 ```sh
 node test/pitch.test.mjs        # Genauigkeit, Reaktionszeit, NLMS, Doppelsprechen
+node test/closedloop.test.mjs   # Geige + Lautsprecher-Echo im geschlossenen Kreis
 node test/stopsignal.test.mjs   # Trennschärfe Stoppsignal unter realistischen Schwankungen
 node test/stopchain.test.mjs    # Stoppsignal-Kette mit laut mitklingender Referenz
 node test/e2e.mjs               # Browser-Test mit simuliertem Mikrofon (Playwright + Chromium)
+ECHO=0.5 node test/e2e.mjs      # dasselbe mit simuliertem Lautsprecher-Echo (?echotest=0.5)
 node test/e2e-train.mjs         # Browser-Test Einlernen + Testmodus
 ```

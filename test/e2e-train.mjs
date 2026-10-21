@@ -19,7 +19,7 @@ const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));
 await page.goto('http://localhost:8768/');
 await page.click('#train-main');               // startet Audio automatisch
-await page.waitForTimeout(9000);
+await page.waitForTimeout(11800);
 const progress = await page.textContent('#train-progress');
 const log = await page.$$eval('#train-log div', (els) => els.map((e) => e.textContent).reverse());
 await page.screenshot({ path: path.join(os.tmpdir(), 'dynatune-train.png') });

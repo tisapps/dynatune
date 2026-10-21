@@ -1,10 +1,12 @@
-// Echo-Kalibrierung für die NLMS-Unterdrückung
+// Einmessen: Echo des Lautsprechers bestimmen
 //
-// Ablauf: kurzes Rauschen über den Lautsprecher, gleichzeitig Mikrofon und
-// gesendetes Signal aufnehmen. Die Kreuzkorrelation liefert die Laufzeit
-// (Ausgabe-Latenz + Schallweg + Eingabe-Latenz). Anschließend wird das
-// NLMS-Filter auf diesen Daten vortrainiert, damit die Unterdrückung schon
-// beim ersten Ton wirkt.
+// 1. Rauschen (0,5 s) über den Lautsprecher, gleichzeitig Mikrofon und
+//    gesendetes Signal aufnehmen. Die Kreuzkorrelation liefert die Laufzeit
+//    (Ausgabe-Latenz + Schallweg + Eingabe-Latenz); darauf wird das NLMS-Filter
+//    trainiert (= Frequenzgang Lautsprecher → Mikrofon).
+// 2. Tonprobe (Referenzklang A4, 0,5 s): wie stark ist das Rest-Echo nach der
+//    Unterdrückung? Daraus erwartet die Notenlogik später das Echo jedes Tons –
+//    nötig, um „Musiker spielt genau den Referenzton“ von „nur Echo“ zu trennen.
 
 import { crossCorrelate } from './dsp.js';
 
@@ -65,7 +67,7 @@ export async function calibrateEcho(ctx, node, refBus, level = 0.25) {
   return { ok: true, delay, latencyMs: (lag / fs) * 1000, strength, erleDb, echoDb };
 }
 
-function trainNlms(mic, ref, delay, L, passes = 4, mu = 0.5) {
+export function trainNlms(mic, ref, delay, L, passes = 4, mu = 0.5) {
   const w = new Float32Array(L);
   const n = mic.length;
   let errEnd = 0, micEnd = 0;
@@ -89,4 +91,29 @@ function trainNlms(mic, ref, delay, L, passes = 4, mu = 0.5) {
     }
   }
   return { weights: w, erleDb: 10 * Math.log10((micEnd + 1e-20) / (errEnd + 1e-20)) };
+}
+
+// Tonprobe: Referenzklang spielen, Verhältnis Rest-Echo / Referenzpegel bzw.
+// Rest-Echo / NLMS-Echoschätzung messen (Median über 0,25 … 0,55 s)
+export async function probeEcho(ctx, node, ref) {
+  const ratios = [], ks = [];
+  const prev = node.port.onmessage;
+  const t0 = ctx.currentTime;
+  node.port.onmessage = (ev) => {
+    const m = ev.data;
+    if (m.type !== 'pitch') { if (prev) prev(ev); return; }
+    const dt = ctx.currentTime - t0;
+    if (dt < 0.25 || dt > 0.55) return;
+    if (m.refRms > 1e-3) ratios.push(m.rms / m.refRms);
+    if (m.echo > 1e-4) ks.push(m.rms / m.echo);
+  };
+  ref.play(440);
+  node.port.postMessage({ type: 'ref', f: 440 });
+  await new Promise((r) => setTimeout(r, 600));
+  ref.stop(0.05);
+  node.port.postMessage({ type: 'ref', f: 0 });
+  await new Promise((r) => setTimeout(r, 350));     // Echo ausklingen lassen
+  node.port.onmessage = prev;
+  const med = (a) => (a.length ? a.sort((x, y) => x - y)[a.length >> 1] : null);
+  return { leakGain: med(ratios), echoK: med(ks) };
 }

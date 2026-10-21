@@ -1,10 +1,12 @@
-// Dynatune – Hauptprogramm: Audio-Aufbau, Zustandsautomat, Bedienung
+// Dynatune – Hauptprogramm: Audio-Aufbau, Einmessen, Bedienung
+// (Notenlogik/Zustandsautomat: js/tracker.js)
 
-import { analyzeFreq, freqFromMidi, centsBetween, noteName, TRANSPOSITIONS } from './tuning.js';
+import { freqFromMidi, noteName, TRANSPOSITIONS } from './tuning.js';
 import { ReferenceEngine, TIMBRES } from './reference.js';
-import { TunerDisplay, RANGE } from './display.js';
-import { calibrateEcho } from './calibrate.js';
+import { TunerDisplay } from './display.js';
+import { calibrateEcho, probeEcho } from './calibrate.js';
 import { features, buildTemplate, score, isValidTemplate } from './stopsignal.js';
+import { Tracker, gateFor } from './tracker.js';
 
 // ---------- Einstellungen ----------
 const DEFAULTS = {
@@ -18,19 +20,21 @@ const DEFAULTS = {
   smoothing: 6,       // Glättung der Anzeige 1..10
   lang: 'de',
   transpose: 'C',
-  nlms: true,
+  autoCalib: true,    // beim Start einmessen (Echo des Lautsprechers)
   stopThreshold: 0.5,
   stopTemplate: null,
 };
 const STORE_KEY = 'dynatune.settings.v1';
 
-const SETTINGS_REV = 2;
+const SETTINGS_REV = 3;
 function loadSettings() {
   let s;
   try { s = { ...DEFAULTS, ...JSON.parse(localStorage.getItem(STORE_KEY) || '{}') }; }
   catch { s = { ...DEFAULTS }; }
   // Rev. 2: neues Stoppsignal-Verfahren – alte Vorlage passt nicht mehr, Schwelle neu
   if ((s.rev || 1) < 2) { s.stopTemplate = null; s.stopThreshold = DEFAULTS.stopThreshold; }
+  // Rev. 3: Einmessen beim Start statt gespeicherter Echo-Laufzeit
+  if ((s.rev || 1) < 3) { delete s.echo; delete s.nlms; s.autoCalib = true; }
   if (s.stopTemplate && !isValidTemplate(s.stopTemplate)) s.stopTemplate = null;
   s.rev = SETTINGS_REV;
   return s;
@@ -40,41 +44,32 @@ function saveSettings() {
 }
 const S = loadSettings();
 
-// ---------- Erkennungsparameter ----------
-const STABLE_FRAMES = 3;      // gleiche Note in 3 Messungen (~16 ms) bis Ton gilt
-const SILENCE_MS = 120;       // so lange kein Ton → Haltezustand
-const CLARITY_MIN = 0.8;
-const LEAK_CENTS = 1.2;       // so nah an der Referenz (oder Vielfachen) = Verdacht auf Übersprechen
-
-const gateFor = (s) => 0.05 * 10 ** (-(s - 1) / 4.5);
-
 // ---------- Zustand ----------
 let ctx = null, node = null, ref = null, refBus = null, micStream = null;
-let state = 'off';           // off | idle | tracking | hold | train
-let currentNote = null;      // MIDI-Note der Referenz
-let candidate = { note: null, count: 0 };
-let grayCount = 0;           // Graubereich erst nach 2 Messungen anzeigen (Tonwechsel-Übergang)
-let silenceSince = null;
-let holdStart = 0;
-let peakRms = 0;
-let leak = { samples: [], base: null };
+let mode = 'off';            // off | run | calib | train
+let tracker = null;
+let calib = null;            // Ergebnis des Einmessens (nur für diese Sitzung)
 let training = null;
 let wakeLock = null;
-let lastPitch = null;
+let starting = false;
 
 const $ = (id) => document.getElementById(id);
 const display = new TunerDisplay($('meter'));
 display.tol = S.tolerance;
 const tauFor = (s) => 0.04 * 1.35 ** (s - 1);   // Glättung 1..10 → 0,04 … 0,6 s
 display.tau = tauFor(S.smoothing);
+const currentNote = () => tracker?.currentNote ?? null;
 
 // ---------- Audio-Aufbau ----------
 async function start() {
+  if (starting || ctx) return;
+  starting = true;
   try {
     micStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 },
     });
   } catch (e) {
+    starting = false;
     toast('Kein Mikrofonzugriff: ' + e.message);
     return;
   }
@@ -93,7 +88,23 @@ async function start() {
   refBus = ctx.createGain();
   ref.output.connect(refBus);
   refBus.connect(ctx.destination);
-  refBus.connect(node, 0, 1);           // Referenz als NLMS-Eingang
+  refBus.connect(node, 0, 1);           // gesendete Referenz: für NLMS und Kammfilter
+
+  // Testhilfe: ?echotest=<Pegel> mischt ein simuliertes Handy-Lautsprecher-Echo
+  // (Laufzeit, kaum Bässe, Verzerrung) ins Mikrofonsignal
+  const echoTest = Number(new URLSearchParams(location.search).get('echotest'));
+  if (echoTest > 0) {
+    const delay = ctx.createDelay(1); delay.delayTime.value = 0.04;
+    const hp1 = ctx.createBiquadFilter(), hp2 = ctx.createBiquadFilter();
+    hp1.type = hp2.type = 'highpass'; hp1.frequency.value = hp2.frequency.value = 450;
+    const shaper = ctx.createWaveShaper();
+    const curve = new Float32Array(1024);
+    for (let i = 0; i < 1024; i++) { const x = (i / 511.5 - 1) * 2; curve[i] = Math.tanh(1.5 * x) / 1.5; }
+    shaper.curve = curve;
+    shaper.oversample = '4x';        // ohne Überabtastung entstünde Aliasing, das ein echter Lautsprecher nicht hat
+    const g = ctx.createGain(); g.gain.value = echoTest * 3;
+    refBus.connect(delay).connect(hp1).connect(hp2).connect(g).connect(shaper).connect(node, 0, 0);
+  }
 
   const sink = ctx.createGain();        // hält den Worklet-Knoten aktiv
   sink.gain.value = 0;
@@ -101,12 +112,14 @@ async function start() {
 
   node.port.onmessage = onWorkletMessage;
   if (ctx.state !== 'running') await ctx.resume();
-  applyNlmsSetting();
-  setState('idle');
-  requestWakeLock();
+  tracker = new Tracker(trackerIO, S);
   $('start').textContent = 'Stopp';
   $('start').classList.add('running');
+  requestWakeLock();
   showLatency();
+  starting = false;
+  if (S.autoCalib) await runCalibration(true);
+  else setMode('run');
 }
 
 function stop() {
@@ -114,146 +127,101 @@ function stop() {
   micStream?.getTracks().forEach((t) => t.stop());
   ctx?.close();
   ctx = node = ref = refBus = micStream = null;
-  setState('off');
+  tracker = null;
+  calib = null;
+  setMode('off');
   wakeLock?.release?.(); wakeLock = null;
   $('start').textContent = 'Start';
   $('start').classList.remove('running');
   display.reset();
   renderNote(null);
-}
-
-function applyNlmsSetting() {
-  if (!node) return;
-  node.port.postMessage({ type: 'nlms', enabled: S.nlms && !!S.echo });
-  if (S.nlms && S.echo) node.port.postMessage({ type: 'nlms', delay: S.echo.delay });
+  renderReference();
 }
 
 async function requestWakeLock() {
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* optional */ }
 }
+
+// App im Hintergrund: Audio vollständig freigeben. Ein offen gehaltenes Mikrofon
+// hält Android im Kommunikationsmodus; nach Bluetooth-Nutzung bleibt dann der
+// Lautsprecher stumm.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && state !== 'off') requestWakeLock();
+  if (document.visibilityState === 'hidden' && ctx) { stop(); toast('Pausiert – zum Weitermachen Start drücken.'); }
+});
+window.addEventListener('pagehide', () => { if (ctx) stop(); });
+
+// Audiogerät gewechselt (Kopfhörer/Bluetooth ein- oder ausgesteckt):
+// Audio neu aufbauen, damit die Ausgabe wieder richtig geroutet wird, und neu einmessen.
+let deviceTimer;
+navigator.mediaDevices?.addEventListener?.('devicechange', () => {
+  clearTimeout(deviceTimer);
+  deviceTimer = setTimeout(async () => {
+    if (!ctx || mode === 'train') return;
+    stop();
+    toast('Audiogerät gewechselt – Audio neu gestartet.');
+    await start();
+  }, 1000);
 });
 
-// ---------- Zustandsautomat ----------
-function setState(s) {
-  state = s;
+// ---------- Zustände ----------
+const LABELS = { off: 'Aus', idle: 'Hört zu', tracking: 'Verfolgt', hold: 'Hält', train: 'Lernt Stoppsignal', calib: 'Misst ein …' };
+
+function setMode(m) {
+  mode = m;
+  if (m === 'run' && tracker) tracker.reset();
+  showState(m === 'run' ? tracker?.state ?? 'idle' : m);
+}
+
+function showState(s) {
   if (node) {
-    // NLMS nur adaptieren, wenn ausschließlich die Referenz klingt
-    node.port.postMessage({ type: 'adapt', value: s === 'hold' });
-    const g = gateFor(S.sensitivity);
     // Stoppsignal-Erkennung nur im Halten (beim Spielen würde z. B. Zungenstoß auslösen) und beim Einlernen
+    const g = gateFor(S.sensitivity);
     node.port.postMessage({ type: 'transient', value: s === 'hold' || s === 'train', gate: g * g });
   }
-  if (s === 'hold') { holdStart = performance.now(); leak = { samples: [], base: null }; }
-  if (s === 'tracking') peakRms = 0;
   document.body.dataset.state = s;
-  const labels = { off: 'Aus', idle: 'Hört zu', tracking: 'Verfolgt', hold: 'Hält', train: 'Lernt Stoppsignal' };
-  $('status').textContent = labels[s];
+  $('status').textContent = LABELS[s];
 }
 
-function startReference(note) {
-  currentNote = note;
-  ref.play(freqFromMidi(note + S.octave, S.a4));
-  node?.port.postMessage({ type: 'ref', f: ref.freq });
-  renderReference();
-}
+const trackerIO = {
+  startReference(note) {
+    ref.play(freqFromMidi(note + S.octave, S.a4));
+    node.port.postMessage({ type: 'ref', f: ref.freq });
+    renderReference(note);
+  },
+  stopReference(reason) {
+    ref?.stop(reason === 'signal' ? 0.08 : 0.4);
+    node?.port.postMessage({ type: 'ref', f: 0 });
+    renderReference(null);
+    renderNote(null);
+    display.reset();
+  },
+  setState(s) {
+    if (mode === 'run') showState(s);
+    // im Halten ist der Cent-Wert nicht mehr aktuell
+    if (s === 'hold') { display.push(null, performance.now() / 1000); $('cents').classList.add('gray'); }
+  },
+  refFreq: () => ref?.freq ?? 0,
+  show(cents, jump) { display.push(cents, performance.now() / 1000, jump); },
+  readout(note, cents, gray, jump) { setReadout(note, cents, gray, jump); },
+};
 
-function stopReference(reason) {
-  ref?.stop(reason === 'signal' ? 0.08 : 0.4);
-  node?.port.postMessage({ type: 'ref', f: 0 });
-  currentNote = null;
-  renderReference();
-  renderNote(null);
-  display.reset();
-  if (state === 'hold' || state === 'tracking') setState('idle');
-}
-
-// Ist der gemessene Ton vermutlich nur der eigene Referenzton aus dem Lautsprecher?
-function isLeak(f, rms) {
-  if (!ref?.playing) return false;
-  let match = false;
-  for (let k = 1; k <= 4 && !match; k++) {
-    if (Math.abs(centsBetween(f, ref.freq * k)) < LEAK_CENTS) match = true;
-    if (Math.abs(centsBetween(f, ref.freq / k)) < LEAK_CENTS) match = true;
-  }
-  if (!match) return false;
-  if (state === 'hold') {
-    if (leak.base == null) return true;
-    return rms < Math.max(gateFor(S.sensitivity) * 1.5, leak.base * 2.5);
-  }
-  if (state === 'tracking') return peakRms > 0 && rms < peakRms * 0.25;
-  return false;
-}
-
-function onPitch(m) {
-  const now = performance.now();
-  const gate = gateFor(S.sensitivity);
-  let valid = m.f > 0 && m.clarity >= CLARITY_MIN && m.rms >= gate;
-  if (valid && isLeak(m.f, m.rms)) valid = false;
-
-  // Grundpegel des Übersprechens zu Beginn des Haltens messen
-  if (state === 'hold' && leak.base == null) {
-    const dt = now - holdStart;
-    if (dt > 60 && !valid) leak.samples.push(m.rms);
-    if (dt > 250) {
-      const s = leak.samples.sort((a, b) => a - b);
-      leak.base = s.length ? s[Math.floor(s.length / 2)] : 0;
-    }
-  }
-
-  if (valid) {
-    silenceSince = null;
-    const { note, cents } = analyzeFreq(m.f, S.a4);
-    const inZone = Math.abs(cents) <= RANGE;
-    lastPitch = { f: m.f, note, cents, inZone };
-    grayCount = inZone ? 0 : grayCount + 1;
-    if (inZone) {
-      candidate = candidate.note === note ? { note, count: candidate.count + 1 } : { note, count: 1 };
-      if (candidate.count >= STABLE_FRAMES) {
-        const changed = note !== currentNote;
-        if (changed) startReference(note);
-        if (state !== 'tracking') setState('tracking');
-        peakRms = Math.max(peakRms, m.rms);
-        display.push(cents, now / 1000, changed);
-        setReadout(note, cents, false, changed);
-      }
-    } else if (grayCount >= 2) {
-      // Graubereich: Referenz spielt weiter, Anzeige grau
-      candidate = { note: null, count: 0 };
-      if (state === 'hold' && currentNote != null) setState('tracking');
-      if (state === 'tracking') peakRms = Math.max(peakRms, m.rms);
-      display.push(Math.sign(cents) * (RANGE + 2), now / 1000);
-      setReadout(note, cents, true);
-    }
-  } else {
-    candidate = { note: null, count: 0 };
-    grayCount = 0;
-    display.push(null, now / 1000);
-    if (state === 'tracking') {
-      if (silenceSince == null) silenceSince = now;
-      if (now - silenceSince > SILENCE_MS) {
-        if (currentNote != null) setState('hold'); else setState('idle');
-      }
-    }
-  }
-
-  if (state === 'hold' && now - holdStart > S.holdSec * 1000) stopReference('timeout');
+function stopReferenceNow(reason) {
+  if (tracker && tracker.currentNote != null) tracker.stopReference(reason, performance.now());
 }
 
 function onTransient(m) {
   const f = features(m.buf, m.fs);
-  if (state === 'train' && training) {
+  if (mode === 'train' && training) {
     if (training.phase === 'record') recordSample(f);
     else showTestResult(score(S.stopTemplate, f));
     return;
   }
-  if (state === 'hold' && S.stopTemplate) {
+  if (mode === 'run' && S.stopTemplate && tracker?.stopSignalAllowed(performance.now())) {
     const sc = score(S.stopTemplate, f);
     const pct = `${(sc * 100).toFixed(0)} %`;
     $('stop-last').textContent = `letzte Erkennung: ${pct}`;
     if (sc >= S.stopThreshold) {
-      stopReference('signal');
+      stopReferenceNow('signal');
       flashHint(`Stoppsignal erkannt (${pct})`);
     } else {
       flashHint(`Geräusch: ${pct} – Stoppsignal braucht ${Math.round(S.stopThreshold * 100)} %`);
@@ -273,7 +241,7 @@ const HINT = 'Antippen der Anzeige beendet den Referenzton.';
 
 function onWorkletMessage(ev) {
   const m = ev.data;
-  if (m.type === 'pitch') { if (state !== 'off' && state !== 'train') onPitch(m); }
+  if (m.type === 'pitch') { if (mode === 'run' && tracker) tracker.pitch(m, performance.now()); }
   else if (m.type === 'transient') onTransient(m);
 }
 
@@ -307,20 +275,20 @@ function renderNote(note, cents, gray = false) {
   $('cents').classList.toggle('gray', gray);
 }
 
-function renderReference() {
+function renderReference(note = currentNote()) {
   const el = $('refinfo');
-  if (currentNote == null) { el.textContent = 'Referenz: –'; return; }
-  const n = currentNote + S.octave;
+  if (note == null) { el.textContent = 'Referenz: –'; return; }
+  const n = note + S.octave;
   const { name, octave } = noteName(n, S.lang, TRANSPOSITIONS[S.transpose]);
   el.textContent = `Referenz: ${name}${octave} · ${freqFromMidi(n, S.a4).toFixed(2).replace('.', ',')} Hz`;
 }
 
 function frame() {
   display.draw(performance.now() / 1000);
-  if (readout && performance.now() - readoutShown > 100) renderReadout();
+  if (readout && performance.now() - readoutShown > 100 && tracker?.state !== 'hold') renderReadout();
   const bar = $('holdbar');
-  if (state === 'hold') {
-    const left = Math.max(0, S.holdSec - (performance.now() - holdStart) / 1000);
+  if (mode === 'run' && tracker?.state === 'hold') {
+    const left = Math.max(0, S.holdSec - (performance.now() - tracker.holdStart) / 1000);
     bar.style.transform = `scaleX(${left / S.holdSec})`;
     $('status').textContent = `Hält · ${Math.ceil(left)} s`;
   } else {
@@ -352,11 +320,9 @@ function toast(msg) {
 async function startTraining() {
   if (!ctx) await start();          // Audio bei Bedarf automatisch starten
   if (!ctx) return;
-  ref.stop(0.05); currentNote = null; renderReference();
-  node.port.postMessage({ type: 'ref', f: 0 });
-  renderNote(null); display.reset();
+  stopReferenceNow('train');
   training = { list: [], needed: 5, phase: 'record' };
-  setState('train');
+  setMode('train');
   $('train-title').textContent = 'Stoppsignal einlernen';
   $('train-text').innerHTML = `Mach dein Signal (z. B. Zungenschnalzen) <strong>${training.needed}×</strong>, jeweils mit etwa einer Sekunde Pause. Möglichst so, wie du es später beim Spielen machst.`;
   $('train-progress').textContent = `0 / ${training.needed} aufgenommen`;
@@ -397,7 +363,7 @@ function showTestResult(sc) {
 }
 function cancelTraining() {
   training = null;
-  if (state === 'train') setState('idle');
+  if (mode === 'train') setMode('run');
 }
 function renderStopInfo() {
   const t = S.stopTemplate;
@@ -408,33 +374,31 @@ function renderStopInfo() {
   $('train-main').classList.toggle('trained', !!t);
 }
 
-// ---------- Echo kalibrieren ----------
-async function runCalibration() {
-  if (!ctx) await start();
-  if (!ctx) return;
+// ---------- Einmessen ----------
+// Rauschen → Echo-Laufzeit + NLMS-Filter; Tonprobe → erwartetes Rest-Echo
+async function runCalibration(auto = false) {
+  if (!ctx) { await start(); return; }     // start() misst selbst ein
+  if (mode === 'calib') return;
   const btn = $('calibrate');
   btn.disabled = true;
-  $('echo-info').textContent = 'Kalibriere … bitte ruhig sein.';
-  ref.stop(0.05); currentNote = null;
-  node.port.postMessage({ type: 'ref', f: 0 });
-  const prev = state;
-  setState('train');                  // Tonerkennung pausieren
+  stopReferenceNow('calib');
+  setMode('calib');
+  if (auto) toast('Einmessen – bitte kurz still sein …');
+  $('echo-info').textContent = 'Misst ein … bitte kurz still sein.';
   try {
     const r = await calibrateEcho(ctx, node, refBus);
-    if (r.ok) {
-      S.echo = { delay: r.delay };
-      $('echo-info').textContent = `Echo-Laufzeit ${r.latencyMs.toFixed(0)} ms · Dämpfung ${r.erleDb.toFixed(0)} dB`;
-    } else {
-      S.echo = null;
-      $('echo-info').textContent = r.reason;
-    }
-    saveSettings();
-    applyNlmsSetting();
+    const p = await probeEcho(ctx, node, ref);
+    calib = { ...r, ...p };
+    tracker.leakGain = p.leakGain;
+    tracker.echoK = r.ok ? p.echoK : null;
+    $('echo-info').textContent = r.ok
+      ? `Echo-Laufzeit ${r.latencyMs.toFixed(0)} ms · Unterdrückung ${r.erleDb.toFixed(0)} dB`
+      : 'Kein Echo messbar (Kopfhörer) – keine Unterdrückung nötig.';
   } catch (e) {
-    $('echo-info').textContent = 'Kalibrierung fehlgeschlagen: ' + e.message;
+    $('echo-info').textContent = 'Einmessen fehlgeschlagen: ' + e.message;
   }
-  setState(prev === 'off' ? 'off' : 'idle');
   btn.disabled = false;
+  if (ctx) setMode('run');
 }
 
 // ---------- Bedienelemente ----------
@@ -465,7 +429,7 @@ function bindSettings() {
   };
   bind('a4', 'a4', Number, renderReference);
   bind('timbre', 'timbre', String, () => ref?.setTimbre(S.timbre));
-  bind('octave', 'octave', Number, () => currentNote != null && ref && startReference(currentNote));
+  bind('octave', 'octave', Number, () => currentNote() != null && ref && trackerIO.startReference(currentNote()));
   bind('volume', 'volume', Number, () => ref?.setVolume(S.volume));
   bind('sensitivity', 'sensitivity', Number);
   bind('holdSec', 'holdSec', Number);
@@ -473,24 +437,24 @@ function bindSettings() {
   bind('smoothing', 'smoothing', Number, () => (display.tau = tauFor(S.smoothing)));
   bind('lang', 'lang', String, renderReference);
   bind('transpose', 'transpose', String, renderReference);
-  bind('nlms', 'nlms', Boolean, applyNlmsSetting);
+  bind('autoCalib', 'autoCalib', Boolean);
   bind('stopThreshold', 'stopThreshold', Number);
   renderStopInfo();
-  $('echo-info').textContent = S.echo ? `Kalibriert (Laufzeit ${S.echo.delay} Samples)` : 'Noch nicht kalibriert.';
+  $('echo-info').textContent = 'Wird beim Start eingemessen.';
 }
 
-$('start').addEventListener('click', () => (state === 'off' ? start() : stop()));
-$('meter').addEventListener('click', () => { if (currentNote != null) stopReference('tap'); });
+$('start').addEventListener('click', () => (mode === 'off' ? start() : stop()));
+$('meter').addEventListener('click', () => stopReferenceNow('tap'));
 $('open-settings').addEventListener('click', () => $('settings').showModal());
 $('close-settings').addEventListener('click', () => $('settings').close());
-$('calibrate').addEventListener('click', runCalibration);
+$('calibrate').addEventListener('click', () => runCalibration(false));
 $('train').addEventListener('click', startTraining);
 $('train-main').addEventListener('click', startTraining);
 $('train-cancel').addEventListener('click', () => { cancelTraining(); $('train-dialog').close(); });
 $('train-dialog').addEventListener('close', cancelTraining);
 $('stop-reset').addEventListener('click', () => { S.stopTemplate = null; saveSettings(); renderStopInfo(); });
 bindSettings();
-setState('off');
+setMode('off');
 renderNote(null);
 renderReference();
 
@@ -500,9 +464,11 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 
 // für Tests und Fehlersuche
 window.dynatune = {
-  get state() { return state; },
-  get currentNote() { return currentNote; },
+  get state() { return mode === 'run' ? tracker?.state ?? 'idle' : mode; },
+  get currentNote() { return currentNote(); },
   get refFreq() { return ref?.freq ?? 0; },
-  get lastPitch() { return lastPitch; },
+  get lastPitch() { return tracker?.lastPitch ?? null; },
+  get calib() { return calib; },
+  get lastMsg() { return tracker?.lastMsg ?? null; },
   settings: S,
 };

@@ -20,6 +20,7 @@ const RING = 8192;          // Ringpuffer für das (echobereinigte) Signal
 const F_MIN = 60;
 const F_MAX = 2200;
 const MPM_K = 0.9;          // MPM-Schwelle relativ zum höchsten Maximum
+const SINC_HALF = 16;       // Kammfilter-Interpolation: 2 × 16 Stützstellen
 
 class FFT {
   constructor(n) {
@@ -168,8 +169,15 @@ class DynatuneProcessor extends AudioWorkletProcessor {
     this.win = new Float64Array(W_PRECISE);
     this.nsdfFast = new Nsdf(W_FAST);
     this.nsdfPrecise = new Nsdf(W_PRECISE);
-    this.stableCount = 0;
-    this.lastF = 0;
+    this.stRaw = { stable: 0, lastF: 0 };
+    this.stComb = { stable: 0, lastF: 0 };
+    // Kammfilter über genau eine Periode des Referenztons (fein interpoliert):
+    // Das Lautsprecher-Echo der Referenz ist mit dieser Periode streng periodisch
+    // (auch mit Verzerrung und Nachhall) und löscht sich vollständig aus.
+    // Tonerkennung läuft zusätzlich auf diesem Signal.
+    this.ringP = new Float32Array(RING);
+    this.refPeriod = 0;
+    this.refEnergy = 0;
 
     // Hochpass (Gleichanteil)
     this.dcX = 0; this.dcY = 0;
@@ -226,6 +234,9 @@ class DynatuneProcessor extends AudioWorkletProcessor {
         break;
       case 'ref':
         this.combDelay = this.pickCombDelay(m.f);
+        this.refPeriod = m.f > 0 ? this.fs / m.f : 0;
+        if (this.refPeriod > 0) this.makeCombCoef(this.refPeriod);
+        this.stComb.stable = 0;
         break;
       case 'record':
         this.rec = { mic: new Float32Array(m.samples), ref: new Float32Array(m.samples), pos: 0 };
@@ -254,6 +265,7 @@ class DynatuneProcessor extends AudioWorkletProcessor {
       this.dcX = xin; this.dcY = x;
 
       const r = ref ? ref[i] : 0;
+      this.refEnergy = 0.999 * this.refEnergy + 0.001 * r * r;
       // Referenz im doppelten Ringpuffer ablegen
       const p = this.refPos;
       rb[p] = r; rb[p + size] = r;
@@ -304,6 +316,15 @@ class DynatuneProcessor extends AudioWorkletProcessor {
         cv = e - ((1 - fr) * this.ring[i0 % RING] + fr * this.ring[(i0 + 1) % RING]);
       }
       this.ringC[this.ringPos] = cv;
+      if (this.refPeriod > 0) {
+        // Wert an Position n - P per gefensterter Sinc-Interpolation (32 Stützstellen,
+        // Koeffizienten je Referenzton vorberechnet) – Auslöschung > 70 dB auch bei
+        // hohen Tönen mit verzerrten Obertönen
+        const c = this.combCoef, base = this.ringPos - this.combBase + RING, R = this.ring;
+        let d = 0;
+        for (let k = 0; k < c.length; k++) d += c[k] * R[(base + k) % RING];
+        this.ringP[this.ringPos] = e - d;
+      }
       this.ringPos = (this.ringPos + 1) % RING;
       const h = this.hp;
       const hy = h.b0 * cv + h.b1 * h.x1 + h.b2 * h.x2 - h.a1 * h.y1 - h.a2 * h.y2;
@@ -332,6 +353,26 @@ class DynatuneProcessor extends AudioWorkletProcessor {
     const out = outputs[0] && outputs[0][0];
     if (out) out.fill(0);
     return true;
+  }
+
+  // Interpolationskoeffizienten für den Wert x(n - P), P = i0 + u (gebrochen).
+  // Stützstellen n - i0 + k, k = -half … half-1; Abstand zum Zielpunkt t = k + u.
+  // Gewicht: sinc(t) · Hann-Fenster. Nur vergangene Werte (half ≤ i0).
+  makeCombCoef(P) {
+    const i0 = Math.floor(P), u = P - i0;
+    const half = Math.max(2, Math.min(SINC_HALF, i0));
+    const coef = new Float64Array(2 * half);
+    let sum = 0;
+    for (let k = -half; k < half; k++) {
+      const t = k + u;
+      const sinc = Math.abs(t) < 1e-12 ? 1 : Math.sin(Math.PI * t) / (Math.PI * t);
+      const w = 0.5 + 0.5 * Math.cos((Math.PI * t) / (half + 1));
+      coef[k + half] = sinc * w;
+      sum += coef[k + half];
+    }
+    for (let j = 0; j < coef.length; j++) coef[j] /= sum;   // Gleichanteil exakt
+    this.combCoef = coef;
+    this.combBase = i0 + half;      // ältester Wert: n - i0 - half
   }
 
   // Verzögerung = k Perioden, mindestens 20 ms (Spektrum des Geräuschs bleibt
@@ -365,14 +406,15 @@ class DynatuneProcessor extends AudioWorkletProcessor {
     if (this.slowEnergy < 1e-9) this.slowEnergy = 1e-9;
   }
 
-  analyze() {
+  // Tonhöhe eines Ringpuffers bestimmen; st = Stabilitätszustand (Präzisionsfenster)
+  detect(ring, st) {
     const fs = this.fs;
-    const usePrecise = this.stableCount >= W_PRECISE / HOP;
+    const usePrecise = st.stable >= W_PRECISE / HOP;
     const W = usePrecise ? W_PRECISE : W_FAST;
     const x = this.win;
     let sum = 0;
     for (let i = 0; i < W; i++) {
-      const v = this.ring[(this.ringPos - W + i + RING) % RING];
+      const v = ring[(this.ringPos - W + i + RING) % RING];
       x[i] = v; sum += v * v;
     }
     const rms = Math.sqrt(sum / W);
@@ -387,7 +429,7 @@ class DynatuneProcessor extends AudioWorkletProcessor {
       // tiefer Ton im kurzen Fenster: mit langem Fenster nachrechnen
       if (!usePrecise && (!res || fs / res.tau < 130)) {
         const W2 = W_PRECISE;
-        for (let i = 0; i < W2; i++) x[i] = this.ring[(this.ringPos - W2 + i + RING) % RING];
+        for (let i = 0; i < W2; i++) x[i] = ring[(this.ringPos - W2 + i + RING) % RING];
         const n2 = this.nsdfPrecise.compute(x);
         const r2 = mpm(n2, minTau, Math.min(W2 / 2, Math.ceil(fs / F_MIN)));
         if (r2) { r2.tau = refineTau(n2, r2.tau, W2 / 2); res = r2; }
@@ -402,21 +444,28 @@ class DynatuneProcessor extends AudioWorkletProcessor {
     }
 
     // Stabilität für das Präzisionsfenster
-    if (f > 0 && clarity > 0.85 && this.lastF > 0 &&
-        Math.abs(1200 * Math.log2(f / this.lastF)) < 30) {
-      this.stableCount++;
-    } else {
-      this.stableCount = 0;
-    }
-    this.lastF = f;
-
-    this.port.postMessage({
-      type: 'pitch', f, clarity, rms,
-      precise: usePrecise,
-      echo: Math.sqrt(this.yShort),
-      t: currentTime,
-    });
+    if (f > 0 && clarity > 0.85 && st.lastF > 0 && Math.abs(1200 * Math.log2(f / st.lastF)) < 30) st.stable++;
+    else st.stable = 0;
+    st.lastF = f;
+    return { f, clarity, rms, precise: usePrecise };
   }
+
+  analyze() {
+    const raw = this.detect(this.ring, this.stRaw);
+    const msg = {
+      type: 'pitch', f: raw.f, clarity: raw.clarity, rms: raw.rms, precise: raw.precise,
+      refRms: Math.sqrt(this.refEnergy),
+      echo: this.nlmsOn ? Math.sqrt(this.yShort) : 0,   // NLMS-Schätzung des Echos für den aktuellen Ton
+      t: currentTime,
+    };
+    // Zusätzlich auf dem Signal ohne Referenz-Echo (Kammfilter über eine Referenzperiode)
+    if (this.refPeriod > 0) {
+      const c = this.detect(this.ringP, this.stComb);
+      msg.fc = c.f; msg.cc = c.clarity; msg.rmsC = c.rms;
+    }
+    this.port.postMessage(msg);
+  }
+
 }
 
 registerProcessor('dynatune-processor', DynatuneProcessor);

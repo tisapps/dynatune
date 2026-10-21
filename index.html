@@ -89,13 +89,13 @@
       </section>
 
       <section class="group">
-        <h3>Rückkopplungsschutz (NLMS)</h3>
+        <h3>Lautsprecher-Echo</h3>
         <table class="set"><tbody>
-          <tr><th><label for="nlms">Echo unterdrücken</label></th><td><input id="nlms" type="checkbox" class="switch"></td></tr>
-          <tr><th>Kalibrierung</th><td><button id="calibrate" type="button">Echo kalibrieren</button>
+          <tr><th><label for="autoCalib">Beim Start einmessen</label></th><td><input id="autoCalib" type="checkbox" class="switch"></td></tr>
+          <tr><th>Einmessen</th><td><button id="calibrate" type="button">Jetzt einmessen</button>
             <p id="echo-info" class="small"></p></td></tr>
         </tbody></table>
-        <p class="small group-hint">Ohne Kopfhörer kalibrieren, Gerät in Spielposition. Mit Kabelkopfhörern ist keine Unterdrückung nötig; Bluetooth-Kopfhörer sind zu langsam.</p>
+        <p class="small group-hint">Beim Start spielt Dynatune kurz ein Rauschen und einen Ton, um das Echo des Lautsprechers zu messen. Bitte dabei still sein. Mit Kabelkopfhörern ist das Ergebnis „kein Echo“. Bluetooth-Kopfhörer sind wegen ihrer Verzögerung ungeeignet.</p>
       </section>
 
       <p id="latency" class="small"></p>

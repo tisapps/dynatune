@@ -1,5 +1,5 @@
 // Service Worker: App-Shell offline verfügbar machen
-const VERSION = 'dynatune-v4';
+const VERSION = 'dynatune-v5';
 const ASSETS = [
   './',
   'index.html',
@@ -8,6 +8,7 @@ const ASSETS = [
   'js/tuning.js',
   'js/reference.js',
   'js/display.js',
+  'js/tracker.js',
   'js/calibrate.js',
   'js/stopsignal.js',
   'js/dsp.js',

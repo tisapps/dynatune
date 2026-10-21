@@ -2,7 +2,7 @@
 
 **Dynamisches Stimmgerät als Progressive Web App (PWA) für Smartphones**
 
-Stand: 20.10.2026 · Version 1.3 (Stoppsignal überarbeitet) · Prototyp: Stufe 1 umgesetzt
+Stand: 21.10.2026 · Version 1.4 (Lautsprecher-Echo, Einmessen) · Prototyp: Stufe 1 umgesetzt
 
 ---
 
@@ -22,13 +22,13 @@ Herkömmliche Stimmgeräte zeigen nur an, ob ein Ton zu hoch oder zu tief ist. D
 | Grüner Bereich | voll grün bis ±2 Cent, **weicher Übergang** bis ±4 Cent (Mitte ±3, einstellbar) |
 | Glättung der Anzeige | Median + zeitbasierte Glättung, Standard ≈ 180 ms (einstellbar 40–600 ms) |
 | Graubereich (20–50 Cent neben einem Halbton) | Anzeige grau, **Referenz spielt weiter** |
-| Rückkopplungsschutz | NLMS-Echounterdrückung (adaptives Filter), mit Kalibrierung |
+| Rückkopplungsschutz | Einmessen beim Start, NLMS-Filter + Kammfilter über die Referenzperiode |
 | Ende des Haltens | eingelerntes Stoppsignal, Antippen der Anzeige oder **automatische Abschaltung nach einstellbarer Zeit (5–60 s, Standard 20 s)** |
 
 ## 3. Bedienablauf
 
 1. **Start** antippen und den Mikrofonzugriff erlauben.
-2. Einmalig in den Einstellungen Klang und Kammerton wählen. Ohne Kopfhörer zusätzlich **Echo kalibrieren**. Das **Stoppsignal** lässt sich direkt auf dem Hauptbildschirm einlernen (Schaltfläche neben Start); falls nötig, startet das Audio dabei automatisch.
+2. Einmalig in den Einstellungen Klang und Kammerton wählen. Beim Start misst die App automatisch das Lautsprecher-Echo ein (≈ 2 s Rauschen und Ton, bitte still sein). Das **Stoppsignal** lässt sich direkt auf dem Hauptbildschirm einlernen (Schaltfläche neben Start); falls nötig, startet das Audio dabei automatisch.
 3. Ton spielen. Nach rund 20–60 ms (je nach Tonhöhe, siehe Abschnitt 5) setzt die Referenz in sauberer Stimmung ein.
 4. Beim Tonwechsel springt die Referenz mit 20 ms Überblendung mit.
 5. Hört der Musiker auf, klingt die Referenz weiter („Halten“). Ein Balken zeigt die verbleibende Zeit bis zur automatischen Abschaltung.
@@ -110,30 +110,55 @@ Aufbereitung (offline per Skript, nicht im Browser):
 
 Zur Wiedergabe dient ein `AudioBufferSourceNode` mit `loop` und einem `playbackRate`, das aus Zielfrequenz und korrigierter Sample-Frequenz berechnet wird.
 
-## 7. Rückkopplungsschutz (NLMS)
+## 7. Lautsprecher-Echo der Referenz
 
-**Problem:** Ohne Kopfhörer nimmt das Mikrofon den Referenzton aus dem Lautsprecher mit auf. Gerade im Zustand „Halten“ würde die App sonst ihren eigenen Ton als gespielten Ton erkennen.
+**Problem:** Ohne Kopfhörer hört das Mikrofon den eigenen Referenzton mit. Im ersten Praxistest führte das zu falschen Oktaven, verpassten Tonwechseln und einem Halten, das nie erreicht wurde (damit konnte auch das Stoppsignal nicht greifen).
+
+Die Ursache zeigt die Simulation: Geige und Referenz-Echo bilden eine Mischung mit gemeinsamer Unterperiode. G4-Echo + gespieltes A4 (Verhältnis 8 : 9) ergibt C3, also einen Ton, der gar nicht klingt. Mit der Lautsprecher-Verzerrung reicht die NLMS-Unterdrückung allein (≈ 16 dB) dagegen nicht aus.
 
 **Lösung, mehrstufig:**
 
-1. **Kalibrierung** (Knopf „Echo kalibrieren“): Die App spielt 0,5 s Rauschen und nimmt gleichzeitig Mikrofon und Sendesignal auf.
-   - Die Kreuzkorrelation per FFT liefert die Echo-Laufzeit (Ausgabelatenz + Schallweg + Eingabelatenz).
-   - Auf diesen Daten wird das Filter (256 Koeffizienten, ≈ 5 ms Nachhall) vortrainiert. So wirkt die Unterdrückung schon beim ersten Ton.
-   - Findet die Kalibrierung kein Echo (Kopfhörer), bleibt die Unterdrückung aus.
-2. **NLMS im AudioWorklet:** Das Filter schätzt das Echo aus dem bekannten Referenzsignal und zieht es vom Mikrofon ab. Die Tonerkennung arbeitet nur noch auf dem Restsignal.
-   - Leaky-NLMS verhindert, dass die Koeffizienten bei schmalbandiger Referenz driften.
-3. **Doppelsprech-Schutz:** Das Filter lernt nur im Zustand „Halten“ (dann klingt nur die Referenz). Steigt das Restsignal plötzlich an, weil der Musiker wieder spielt, friert das Lernen sofort ein. Sonst würde das Filter den Musiker selbst „wegfiltern“, dessen Ton ja fast dieselbe Frequenz hat.
-4. **Plausibilitätsregel (Sicherheitsnetz):** Ein erkannter Ton, der auf ±1,2 Cent der Referenz (oder einem Vielfachen davon) liegt, gilt als Übersprechen, solange sein Pegel nicht deutlich über dem zu Beginn des Haltens gemessenen Restpegel liegt.
+1. **Einmessen beim Start** (abschaltbar, jederzeit wiederholbar), Dauer ≈ 2 s, der Musiker ist dabei still:
+   - 0,5 s Rauschen über den Lautsprecher. Die Kreuzkorrelation liefert die Echo-Laufzeit, darauf wird das NLMS-Filter trainiert (256 Koeffizienten, Frequenzgang Lautsprecher → Mikrofon). Ohne messbares Echo (Kopfhörer) bleibt die Unterdrückung aus.
+   - 0,5 s Tonprobe mit dem Referenzklang: Wie stark ist das Rest-Echo nach der Unterdrückung? Mit dem Filter rechnet die App daraus für **jeden** Ton das zu erwartende Echo aus. Das ist wichtig, weil Handylautsprecher je nach Tonhöhe sehr verschieden laut sind.
+   - Das Filter wird danach nicht nachtrainiert. Es bleibt zeitlich konstant, und nur dann funktioniert der Kammfilter (Punkt 2) vollständig.
+2. **Kammfilter über eine Referenzperiode:** Das Echo des Referenztons ist mit der Periode der Referenz streng periodisch, auch mit Lautsprecher-Verzerrung und Raumhall. Wird vom Signal das Signal genau eine Periode vorher abgezogen, verschwindet das Echo vollständig. Die gebrochene Verzögerung wird mit 32 Stützstellen interpoliert (gefensterte Sinc-Funktion), die Auslöschung liegt bei 73–89 dB. Die Tonerkennung läuft zusätzlich auf diesem bereinigten Signal. **Tonwechsel werden dort erkannt**, unabhängig vom Echopegel.
+3. **Spieler auf dem Referenzton:** Spielt der Musiker genau den Referenzton (oder dessen Oktave), verschwindet er im bereinigten Signal mit. Dass er spielt, erkennt die App an drei Zeichen:
+   - Pegel deutlich über dem erwarteten Echo
+   - Die Tonhöhe des Gesamtsignals weicht von der Referenz ab: Reines Echo liegt exakt auf der Referenz (±0,1 ct); Schwebung und Vibrato verschieben die Mischung.
+   - schwache, aber plausible Tonhöhe im bereinigten Signal (obere Teiltöne)
 
-**Gemessen** (Simulation, `test/pitch.test.mjs`):
-- Echodämpfung über 80 dB im Idealfall (lineares Echo).
-- Bei gleichzeitigem Spiel 4 Cent neben der Referenz wird der Musiker exakt mit +4,00 ct erkannt.
+   Die Cent-Anzeige stammt dann aus dem bereinigten Signal. Das Gesamtsignal ist zur Referenz hin verfälscht und wird nur verwendet, wenn das Echo unter 25 % des Spielerpegels liegt; sonst wird die Kugel grau, statt einen geschönten Wert zu zeigen.
+4. **Schutzregeln gegen Artefakte:**
+   - Echo des alten Tons nach einem Wechsel (300 ms) bzw. nach dem Stopp (600 ms) ignorieren, in den ersten 150 ms auch als Mischklang (Unterharmonische)
+   - Unterharmonische der Referenz im bereinigten Signal ignorieren, solange das Gesamtsignal auf der Referenz liegt (Vibrato-Artefakt, z. B. A5 → D4)
+   - Im Zusammenklang mit der Referenz nur Oktavsprünge nach oben zulassen; nur diese sind im bereinigten Signal unsichtbar
 
-Auf echten Geräten ist mit 20–35 dB zu rechnen, weil Smartphone-Lautsprecher nichtlinear verzerren.
+**Gemessen** mit echten Geigen-Samples (16 Töne G3–E6, Legato und abgesetzt, Handy-Lautsprecher simuliert: Laufzeit, Hochpass 450 Hz, Verzerrung, Nachhall):
+
+| Echo im Verhältnis zur Geige | Tonwechsel verpasst | falsche Note | fälschlich Halten |
+|---|---|---|---|
+| vorher (Version 1.3), −5 dB | 2 / 16 | 19 % | – |
+| vorher (Version 1.3), +1 dB | 9 / 16 | 60 % | Halten nie erreicht |
+| Kopfhörer | 0 / 16 | 0 % | 0 % |
+| −5 dB | 0 / 16 | 0 % | 0 % |
+| +1 dB | 0 / 16 | 0 % | 0 % |
+| +6 dB | 0 / 16 | 0 % | 0 % |
+| +10 dB (Extremfall) | 0 / 16 | 3,8 % | 1,9 % |
+| +6 dB, ohne Einmessen | 0 / 16 | 0 % | 5,2 % |
+
+Reaktionszeit beim Tonwechsel: Median 27 ms, höchstens 95 ms.
+
+Cent-Anzeige nahe der Referenz (gespielt +3/+8/+15/+28/−12 ct): bis +6 dB Echo exakt; bei +10 dB werden Abweichungen unter ≈ 5 ct nicht mehr vom Echo unterschieden, die App geht dann ins Halten.
+
+**Bekannte Grenze, Einstellung „Oktave tiefer“:** Springt der Musiker genau auf die Oktave der klingenden Referenz nach unten, ist das physikalisch nicht von „spielt weiter oben“ zu unterscheiden (identische Periode). Der Wechsel wird erst nach einer Pause erkannt.
 
 **Empfehlung in der App:**
 - Kabelkopfhörer, einseitig getragen oder offen, sind ideal.
-- **Bluetooth-Kopfhörer sind ungeeignet:** Sie verzögern um 150–300 ms, die Referenz käme deutlich zu spät.
+- Ohne Kopfhörer: Lautstärke der Referenz nicht höher als nötig.
+- **Bluetooth-Kopfhörer sind ungeeignet:** Sie verzögern um 150–300 ms.
+
+**Bluetooth und Lautsprecher:** Ein offen gehaltenes Mikrofon hält Android im Kommunikationsmodus. Nach Bluetooth-Nutzung blieb dadurch der Lautsprecher stumm. Die App gibt deshalb das Audio vollständig frei, sobald sie in den Hintergrund geht. Wechselt das Audiogerät (Kopfhörer oder Bluetooth ein/aus), baut sie das Audio neu auf und misst neu ein.
 
 ## 8. Grafik
 
@@ -196,31 +221,42 @@ Auf echten Geräten ist mit 20–35 dB zu rechnen, weil Smartphone-Lautsprecher 
 ## 10. Technische Architektur
 
 ```
-Mikrofon ──▶ ┌──────────────────────── AudioWorklet ───────────────────────┐
-             │ DC-Sperre → NLMS (− Echo-Schätzung) → Ringpuffer             │
-Referenz ──▶ │                     │                    │                   │
-(Sendebus)   │                     ▼                    ▼                   │
-             │            MPM-Tonerkennung      Transienten-Erkennung       │
-             └──────────────────│─────────────────────│─────────────────────┘
-                                ▼ alle ≈5 ms          ▼ Ereignis
-             ┌──────────────── Hauptthread ─────────────────────────────────┐
-             │ Zustandsautomat · Notenlogik · Stoppsignal-Vergleich          │
-             │ Referenz-Engine (Synthese, später Sampler) → Sendebus         │
-             │ Canvas-Anzeige · Einstellungen (localStorage)                 │
-             └──────────────────────────────────────────────────────────────┘
-Sendebus ──▶ Lautsprecher/Kopfhörer  und  ──▶ Worklet-Eingang 2 (für NLMS)
+Mikrofon ──▶ ┌──────────────────────── AudioWorklet ─────────────────────────┐
+             │ DC-Sperre → NLMS (− Echo-Schätzung, fest) → Ringpuffer          │
+Referenz ──▶ │        │                        │                    │          │
+(Sendebus)   │        ▼                        ▼                    ▼          │
+             │  MPM-Tonerkennung   Kammfilter (1 Periode)  Kammfilter (≥ 20 ms)│
+             │  (Gesamtsignal)     → MPM (ohne Echo)       → Transienten       │
+             └────────│───────────────────│─────────────────────│─────────────┘
+                      ▼ alle ≈ 5 ms: f, fc, Pegel, Echo-Schätzung ▼ Ereignis
+             ┌──────────────── Hauptthread ────────────────────────────────────┐
+             │ Notenlogik / Zustandsautomat (tracker.js) · Stoppsignal-Vergleich │
+             │ Einmessen · Referenz-Engine → Sendebus · Anzeige · Einstellungen  │
+             └─────────────────────────────────────────────────────────────────┘
+Sendebus ──▶ Lautsprecher/Kopfhörer  und  ──▶ Worklet-Eingang 2 (NLMS, Kammfilter)
 ```
 
 | Datei | Aufgabe |
 |---|---|
-| `worklet/dynatune-processor.js` | Audio-Thread: NLMS, MPM, Kammfilter + Transienten, Kalibrier-Aufnahme |
-| `js/app.js` | Audio-Aufbau, Zustandsautomat, Bedienung |
+| `worklet/dynatune-processor.js` | Audio-Thread: NLMS, MPM auf Gesamt- und bereinigtem Signal, Kammfilter, Transienten, Aufnahme fürs Einmessen |
+| `js/tracker.js` | Notenlogik und Zustandsautomat (ohne Browser-Abhängigkeit, in Node simulierbar) |
+| `js/app.js` | Audio-Aufbau, Einmessen, Gerätewechsel, Bedienung |
 | `js/reference.js` | Referenzton-Engine |
 | `js/display.js` | Grafik |
-| `js/calibrate.js` | Echo-Laufzeit messen, NLMS vortrainieren |
+| `js/calibrate.js` | Echo-Laufzeit, NLMS-Training, Tonprobe |
 | `js/stopsignal.js` | Merkmale und Vergleich für das Stoppsignal |
 | `js/tuning.js` | Noten, Cent, Namen, Transposition |
 | `sw.js`, `manifest.webmanifest` | Offline-Fähigkeit, Installation |
+
+**Tests:**
+
+| Datei | Prüft |
+|---|---|
+| `test/pitch.test.mjs` | Genauigkeit und Reaktionszeit, NLMS, Doppelsprechen, Auslöser |
+| `test/closedloop.test.mjs` | geschlossener Kreis Geige + Lautsprecher-Echo: Tonwechsel, Oktaven, Halten, Stoppsignal, kein Neustart durch Echo |
+| `test/stopsignal.test.mjs`, `test/stopchain.test.mjs` | Trennschärfe Stoppsignal, ganze Kette mit lauter Referenz |
+| `test/e2e.mjs` | Browser mit simuliertem Mikrofon; `ECHO=0.5` mischt ein Lautsprecher-Echo ein (Testschalter `?echotest=`) |
+| `test/e2e-train.mjs` | Einlernen und Testmodus im Browser |
 
 **Wichtige Browser-Einstellungen:**
 - Mikrofon mit `echoCancellation`, `noiseSuppression` und `autoGainControl` = aus. Diese Filter würden Tonhöhe und Pegel verfälschen.
@@ -242,7 +278,7 @@ Die Einstellungen sind in vier Gruppen gegliedert: Referenzton, Erkennung & Anze
 
 | Stufe | Inhalt | Status |
 |---|---|---|
-| 1 | Tonerkennung, synthetische Referenzklänge, Farbgrafik, Halten mit Zeitabschaltung, NLMS mit Kalibrierung, Stoppsignal, PWA | **Prototyp umgesetzt** |
+| 1 | Tonerkennung, synthetische Referenzklänge, Farbgrafik, Halten mit Zeitabschaltung, Einmessen + Echo-Bereinigung, Stoppsignal, PWA | **Prototyp umgesetzt** |
 | 2 | Instrumentensamples (VSCO 2 / Iowa) mit Vermessungs- und Loop-Skript | geplant |
 | 3 | Praxistest auf iPhone und Android-Geräten; Feinabstimmung von Pegeln, Schwellen und NLMS-Länge; Latenzmessung | geplant |
 | 4 | Stimmungssysteme (rein, pythagoreisch, bezogen auf Grundton), Übungsstatistik, Bluetooth-Pedal | Idee |
@@ -251,6 +287,7 @@ Die Einstellungen sind in vier Gruppen gegliedert: Referenzton, Erkennung & Anze
 
 - **iOS:** Bei aktivem Mikrofon kann Safari die Ausgabe leiser oder über den Hörer ausgeben. Das muss auf echten Geräten geprüft werden. Mit Kopfhörern tritt das Problem nicht auf.
 - **Android-Latenz** schwankt stark je nach Gerät. Die App zeigt den Wert an. Bei hoher Latenz helfen Kopfhörer und das Halten.
-- **Lautsprecher-Verzerrung** begrenzt die Echodämpfung. Die Plausibilitätsregel fängt Reste ab. Bleibt das Übersprechen stark, hilft ein längeres Filter (512 Koeffizienten) oder eine Nachdämpfung bekannter Teiltöne.
+- **Sehr lautes Lautsprecher-Echo** (mehr als ≈ 6–10 dB über dem Instrument): Ein Spieler, der wenige Cent neben der Referenz liegt, ist dann nicht mehr vom Echo zu unterscheiden. Die App geht in dem Fall ins Halten, die Referenz klingt weiter. Abhilfe: Referenz leiser oder Kopfhörer.
+- **Nur simuliert:** Die Echo-Verbesserungen sind mit echten Geigen-Samples und einem simulierten Handy-Lautsprecher geprüft, nicht mit echten Geräten. Ob der Lautsprecher-Fehler nach Bluetooth-Nutzung damit behoben ist, kann nur ein Gerätetest zeigen.
 - **Stoppsignal in lauter Umgebung:** Die Schwelle ist einstellbar; Antippen und Zeitabschaltung bleiben immer verfügbar.
 - **Sehr tiefe Instrumente** (Kontrabass, Tuba unter 60 Hz) liegen außerhalb des aktuellen Bereichs. Sie bräuchten ein längeres Fenster und damit mehr Latenz.

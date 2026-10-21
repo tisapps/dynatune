@@ -20,7 +20,8 @@ const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));
 page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
-await page.goto('http://localhost:8765/');
+const ECHO = process.env.ECHO || '';
+await page.goto('http://localhost:8765/' + (ECHO ? `?echotest=${ECHO}` : ''));
 
 // Stoppsignal-Vorlage aus einem synthetischen Schnalzer erzeugen
 await page.evaluate(async () => {
@@ -38,14 +39,15 @@ await page.click('#start');
 const t0 = Date.now();
 const log = [];
 let shot = false;
-while (Date.now() - t0 < 6500) {
+while (Date.now() - t0 < 9000) {
   const s = await page.evaluate(() => ({ st: window.dynatune.state, n: window.dynatune.currentNote, f: window.dynatune.refFreq, p: window.dynatune.lastPitch, cents: document.getElementById('cents').textContent }));
   const last = log.at(-1);
   if (!last || last.st !== s.st || last.n !== s.n || last.cents.includes('außerhalb') !== s.cents.includes('außerhalb')) log.push({ t: Date.now() - t0, ...s });
-  if (!shot && Date.now() - t0 > 1300) { shot = true; await page.screenshot({ path: path.join(os.tmpdir(), 'dynatune-tracking.png') }); }
+  if (!shot && Date.now() - t0 > 3900) { shot = true; await page.screenshot({ path: path.join(os.tmpdir(), 'dynatune-tracking.png') }); }
   await page.waitForTimeout(10);
 }
 console.log('Stoppsignal:', await page.textContent('#stop-last'));
+console.log('Einmessen:', await page.textContent('#echo-info'));
 await page.click('#open-settings');
 await page.screenshot({ path: path.join(os.tmpdir(), 'dynatune-settings.png'), fullPage: true });
 for (const l of log) console.log(`${String(l.t).padStart(5)} ms  ${l.st.padEnd(9)} Note ${l.n ?? '–'}  Ref ${l.f ? l.f.toFixed(2) : '–'} Hz  ${l.cents}`);
@@ -53,7 +55,7 @@ await browser.close();
 server.kill();
 
 const seq = log.map((l) => `${l.st}:${l.n ?? ''}`);
-const want = ['idle:', 'tracking:69', 'tracking:71', 'hold:71', 'idle:'];
+const want = ['calib:', 'idle:', 'tracking:69', 'tracking:71', 'hold:71', 'idle:'];
 let i = 0;
 for (const s of seq) if (s === want[i]) i++;
 const gray = log.some((l) => l.cents.includes('außerhalb') && l.n === 71);
