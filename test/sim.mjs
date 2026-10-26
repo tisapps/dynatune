@@ -56,7 +56,7 @@ export function calibrate(proc, speaker, timbre = 'violine') {
   synth.play(440);
   proc.send({ type: 'ref', f: 440 });
   const mic = new Float32Array(B), ref = new Float32Array(B), out = [[new Float32Array(B)]];
-  const ratios = [], ks = [], steady = [], tailRms = [];
+  const ratios = [], ks = [], steady = [], tailRms = [], combRest = [];
   let s = 5;
   const lag = nl?.lag ?? 0;           // Messfenster um die Echo-Laufzeit verschieben
   for (let i = 0; i < 0.5 * FS + lag; i += B) {
@@ -65,6 +65,7 @@ export function calibrate(proc, speaker, timbre = 'violine') {
     for (const m of proc.port._out.splice(0)) {
       if (m.type !== 'pitch' || i < 0.2 * FS + lag) continue;
       steady.push(m.rms);
+      if (m.rmsC !== undefined) combRest.push(m.rmsC);
       if (m.refRms > 1e-3) ratios.push(m.rms / m.refRms);
       if (m.echo > 1e-4) ks.push(m.rms / m.echo);
     }
@@ -82,7 +83,7 @@ export function calibrate(proc, speaker, timbre = 'violine') {
   const last = tailRms.filter((x) => x.rms > level * 0.0316).pop();
   const tailMs = speaker && last ? Math.min(1000, last.t * 1000) : 0;
   proc.send({ type: 'echoDelay', samples: lag, tailSamples: Math.round((tailMs / 1000) * FS) });
-  return { ...nl, leakGain: med(ratios), echoK: med(ks), tailMs };
+  return { ...nl, leakGain: med(ratios), echoK: med(ks), tailMs, combFloor: med(combRest) };
 }
 
 function calibrateNlms(proc, speaker) {
@@ -156,12 +157,13 @@ export function simulate(player, {
     stopReference(reason) { refNote = null; synth.stop(); proc.send({ type: 'ref', f: 0 }); log.push({ t, ev: 'stop', reason }); },
     setState(s) {
       log.push({ t, ev: 'state', s });
-      proc.send({ type: 'transient', value: s === 'hold', gate: gateFor(sensitivity) ** 2 });
+      proc.send({ type: 'transient', value: s === 'hold' || (s === 'tracking' && tracker.locked), gate: gateFor(sensitivity) ** 2 });
     },
+    locked(v) { proc.send({ type: 'transient', value: tracker.state === 'hold' || v, gate: gateFor(sensitivity) ** 2 }); },
     refFreq: () => synth.freq,
-    show() {}, readout() {},
+    show(c) { tracker._shown = c; }, readout() {},   // _shown: was die Anzeige gerade bekommt (für Auswertungen)
   };
-  const tracker = new Tracker(io, { a4, sensitivity, holdSec, leakGain: cal?.leakGain, echoK: nlms ? cal?.echoK : null, tailMs: cal?.tailMs ?? 0 });
+  const tracker = new Tracker(io, { a4, sensitivity, holdSec, leakGain: cal?.leakGain, echoK: nlms ? cal?.echoK : null, tailMs: cal?.tailMs ?? 0, combFloor: cal?.combFloor });
   const mic = new Float32Array(B), ref = new Float32Array(B), out = [[new Float32Array(B)]];
   let seed = 3;
   const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) * 2 - 1;

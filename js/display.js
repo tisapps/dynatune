@@ -3,6 +3,7 @@
 export const RANGE = 20;         // Erkennungsbreite ±20 Cent
 const VIEW = 25;                 // sichtbarer Bereich (Graubereich außerhalb ±20)
 const TRAIL_SEC = 3;
+const GAP_SEC = 0.15;            // Lücken bis 150 ms überbrücken
 
 const VIOLET = [147, 51, 234];
 const BLUE = [37, 99, 235];
@@ -46,6 +47,7 @@ export class TunerDisplay {
     this.cents = null;    // geglätteter Anzeigewert
     this.active = false;  // Musiker spielt gerade
     this.lastDraw = 0;
+    this.lastValueAt = -Infinity;
     this.resize();
     new ResizeObserver(() => this.resize()).observe(canvas);
   }
@@ -63,12 +65,14 @@ export class TunerDisplay {
   //   1. Median der letzten 7 Messungen (≈ 35 ms) entfernt Ausreißer
   //   2. zeitbasierte Exponentialglättung im Zeichentakt (Zeitkonstante tau)
   // cents: Rohwert der aktuellen Messung (null = kein Ton); jump: neuer Ton
+  // Kurze Lücken (einzelne Messungen ohne Wert, bis GAP_SEC) werden überbrückt:
+  // Kugel und Spur bleiben beim letzten Wert, statt kurz grau zu flackern.
   push(cents, t, jump = false) {
     if (cents == null) {
-      this.active = false;
-      this.raw = [];
+      if (t - this.lastValueAt > GAP_SEC) { this.active = false; this.raw = []; }
       return;
     }
+    this.lastValueAt = t;
     this.active = true;
     if (jump) this.raw = [];
     this.raw.push(cents);
@@ -78,11 +82,12 @@ export class TunerDisplay {
     if (jump || this.cents == null) this.cents = this.target;   // bei Tonwechsel sofort springen
   }
 
-  reset() { this.trail = []; this.raw = []; this.target = null; this.cents = null; this.active = false; }
+  reset() { this.trail = []; this.raw = []; this.target = null; this.cents = null; this.active = false; this.lastValueAt = -Infinity; }
 
   step(now) {
     const dt = Math.min(0.1, Math.max(0, now - (this.lastDraw || now)));
     this.lastDraw = now;
+    if (this.active && now - this.lastValueAt > GAP_SEC) { this.active = false; this.raw = []; }
     if (this.active && this.target != null && this.cents != null) {
       this.cents += (this.target - this.cents) * (1 - Math.exp(-dt / this.tau));
     }

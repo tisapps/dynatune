@@ -62,7 +62,7 @@ const io = {
   refFreq: () => curRef,
   show() {}, readout() {},
 };
-const tracker = new Tracker(io, { a4: S.a4, sensitivity: S.sensitivity, holdSec: S.holdSec, leakGain: cal.leakGain, echoK: cal.ok ? cal.echoK : null, tailMs: cal.ok ? cal.tailMs : 0 });
+const tracker = new Tracker(io, { a4: S.a4, sensitivity: S.sensitivity, holdSec: S.holdSec, leakGain: cal.leakGain, echoK: cal.ok ? cal.echoK : null, tailMs: cal.ok ? cal.tailMs : 0, combFloor: cal.combFloor });
 if (meta.initial?.note != null) { tracker.currentNote = meta.initial.note; tracker.state = meta.initial.state === 'hold' ? 'hold' : 'tracking'; }
 
 const B = 128, out = [[new Float32Array(B)]];

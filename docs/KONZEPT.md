@@ -2,7 +2,7 @@
 
 **Dynamisches Stimmgerät als Progressive Web App (PWA) für Smartphones**
 
-Stand: 21.10.2026 · Version 1.5 (Echo-Laufzeit, Raumhall, Diagnose-Aufnahme) · Prototyp: Stufe 1 umgesetzt
+Stand: 26.10.2026 · Version 1.6 (Stimmen nahe der Referenz) · Prototyp: Stufe 1 umgesetzt
 
 ---
 
@@ -134,7 +134,22 @@ Die Ursache zeigt die Simulation: Geige und Referenz-Echo bilden eine Mischung m
    - Die Notenlogik richtet sich nach dem ankommenden Ton.
    - Das Einmessen erfasst Laufzeiten bis 800 ms; die Tonprobe misst erst nach Ankunft des Echos.
 5. **Raumhall:** Das Einmessen misst auch, wie lange das Echo nachklingt (Abfall um 30 dB). Nach einem Wechsel läuft für diese Zeit ein zweiter Kammfilter für den alten Ton mit, damit dessen Nachhall sich nicht mit dem Spieler zu Fantasietönen mischt.
-6. **Schutzregeln gegen Artefakte:**
+6. **Stimmen nahe der Referenz:** Beim Stimmen liegt der Spieler nur wenige Cent neben der Referenz. Im bereinigten Signal bleibt dann nur ein schwacher Rest des Spielers (bei 3 Cent etwa 1/30 seines Pegels). Version 1.5 verwarf diesen Rest: Die Anzeige hatte nahe der Referenz nur in 43–47 % der Zeit einen Wert. Seit Version 1.6:
+   - **Grundrauschen des bereinigten Signals** wird beim Einmessen gemessen (Tonprobe, nur Echo). Was klar darüber liegt, ist der Spieler, unabhängig davon, wie laut das Echo ist. Daraus kommen „Spieler aktiv“ und die Cent-Werte (ab 3 × Grundrauschen, sonst aus dem Gesamtsignal, dessen Fehler dort höchstens so groß ist wie die Abweichung selbst).
+   - **Einrasten:** Hat sich der Spieler ruhig (≥ 250 ms innerhalb ±6 ct) bis auf ≤ 4 ct herangetastet, ist er bei weiterer Annäherung kaum noch vom Echo zu unterscheiden. Die App bleibt dann „eingerastet“ und zeigt weiter an, solange im bereinigten Signal Spuren des Spielers zu finden sind (über ≈ 35 ms gemittelte Leistung > 1,15 × Rauschleistung, mindestens alle 500 ms). Ein echter Spieler schwankt immer um 1–2 ct und hinterlässt solche Spuren. Der Gesamtpegel taugt hier nicht, weil Spieler und Echo schweben (Pegel schwankt zwischen Verstärkung und Auslöschung). Stoppsignal und Antippen wirken auch eingerastet.
+   - **Anzeige:** Lücken bis 150 ms werden überbrückt, Kugel und Verlaufsspur flackern nicht mehr grau.
+
+   Gemessen (`test/tuning.test.mjs`: Ton von −25 über +12 auf 0 ct gezogen, natürliche Schwankung ±1 ct):
+
+   | Bedingung | Anzeige nahe Referenz (±8 ct) vorher → jetzt | Fehler Median / 90 % | Halten nach Spielende |
+   |---|---|---|---|
+   | Kopfhörer | 100 % → 100 % | 0,2 / 0,4 ct | 0,17 s |
+   | Lautsprecher, Echo 0 dB | 100 % → 100 % | 0,2 / 0,4 ct | 0,8 s |
+   | Lautsprecher, Echo +6 dB | 47 % → 100 % | 0,2 / 0,6 ct | 0,16 s |
+   | + 300 ms Laufzeit + Raumhall 0,4 s | 43 % → 94 % | 0,4 / 1,6 ct | 0,16 s |
+
+   Fälschliches Halten während einer gespielten Melodie (`test/closedloop.test.mjs`): mit lautem Lautsprecher 28 % → 0,8 %, mit Raumhall 30 % → 0,4 %.
+7. **Schutzregeln gegen Artefakte:**
    - Echo des alten Tons nach einem Wechsel (300 ms) bzw. nach dem Stopp (600 ms) ignorieren, in den ersten 150 ms auch als Mischklang (Unterharmonische)
    - Unterharmonische der Referenz (jede ganzzahlige, ½ … ⅟ₙ) im bereinigten Signal ignorieren, solange das Gesamtsignal auf der Referenz liegt (Vibrato-Artefakt, z. B. A5 → D4, E6 → A3)
    - Widerspricht das Gesamtsignal einem Ton aus dem bereinigten Signal, braucht der Wechsel 8 statt 3 Messungen (fängt z. B. 5/4-Fehler ab, wenn untere Teiltöne fehlen)
@@ -271,6 +286,7 @@ Sendebus ──▶ Lautsprecher/Kopfhörer  und  ──▶ Worklet-Eingang 2 (NL
 | Datei | Prüft |
 |---|---|
 | `test/pitch.test.mjs` | Genauigkeit und Reaktionszeit, NLMS, Doppelsprechen, Auslöser |
+| `test/tuning.test.mjs` | Stimmen: Ton langsam an die Referenz heranziehen, Anzeige und Halten mit/ohne Echo |
 | `test/closedloop.test.mjs` | geschlossener Kreis Geige + Lautsprecher-Echo: Tonwechsel, Oktaven, Halten, Stoppsignal, kein Neustart durch Echo |
 | `test/stopsignal.test.mjs`, `test/stopchain.test.mjs` | Trennschärfe Stoppsignal, ganze Kette mit lauter Referenz |
 | `test/e2e.mjs` | Browser mit simuliertem Mikrofon; `ECHO=0.5` mischt ein Lautsprecher-Echo ein (Testschalter `?echotest=`) |
@@ -315,7 +331,7 @@ Die Einstellungen sind in vier Gruppen gegliedert: Referenzton, Erkennung & Anze
 
 - **iOS:** Bei aktivem Mikrofon kann Safari die Ausgabe leiser oder über den Hörer ausgeben. Das muss auf echten Geräten geprüft werden. Mit Kopfhörern tritt das Problem nicht auf.
 - **Android-Latenz** schwankt stark je nach Gerät. Die App zeigt den Wert an. Bei hoher Latenz helfen Kopfhörer und das Halten.
-- **Sehr lautes Lautsprecher-Echo** (mehr als ≈ 6–10 dB über dem Instrument): Ein Spieler, der wenige Cent neben der Referenz liegt, ist dann nicht mehr vom Echo zu unterscheiden. Die App geht in dem Fall ins Halten, die Referenz klingt weiter. Abhilfe: Referenz leiser oder Kopfhörer.
+- **Exakt auf der Referenz:** Ein Ton, der ohne jede Schwankung genau auf der Referenz liegt, ist physikalisch nicht vom Echo zu unterscheiden. Die App rastet ein, solange Spuren der natürlichen Schwankung messbar sind; sonst folgt das Halten (die Referenz klingt weiter). Nach dem Aufhören dauert das Halten im eingerasteten Zustand bis ≈ 0,8 s.
 - **Nur simuliert:** Die Echo-Verbesserungen sind mit echten Geigen-Samples und einem simulierten Handy-Lautsprecher geprüft, nicht mit echten Geräten. Version 1.4 bestand alle Simulationen und versagte trotzdem auf dem Gerät, weil die Simulation 30 ms statt realer 100–400 ms Laufzeit annahm. Deshalb gibt es die Diagnose-Aufnahme (Abschnitt 11). Ob der Lautsprecher-Fehler nach Bluetooth-Nutzung behoben ist, kann nur ein Gerätetest zeigen.
 - **Sprung auf ein Vielfaches der Referenz** (z. B. D4 → A5 = 3 × D4): Der neue Ton ist im bereinigten Signal unsichtbar, bis Vibrato oder Intonation ihn von der Referenz wegbewegen; der Wechsel kann sich um einige hundert Millisekunden verzögern.
 - **Stoppsignal in lauter Umgebung:** Die Schwelle ist einstellbar; Antippen und Zeitabschaltung bleiben immer verfügbar.

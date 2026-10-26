@@ -36,6 +36,7 @@ Tipps:
 ```sh
 node test/pitch.test.mjs        # Genauigkeit, Reaktionszeit, NLMS, Doppelsprechen
 node test/closedloop.test.mjs   # Geige + Lautsprecher-Echo im geschlossenen Kreis
+node test/tuning.test.mjs       # Stimmen: Ton an die Referenz heranziehen, mit/ohne Echo
 node test/stopsignal.test.mjs   # Trennschärfe Stoppsignal unter realistischen Schwankungen
 node test/stopchain.test.mjs    # Stoppsignal-Kette mit laut mitklingender Referenz
 node test/e2e.mjs               # Browser-Test mit simuliertem Mikrofon (Playwright + Chromium)

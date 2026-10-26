@@ -32,7 +32,16 @@ const STOP_ECHO_MS = 600;           // nach Stopp: Echo des ausklingenden Tons i
 const PREV_SUB_MS = 150;            // … und dessen Unterharmonische (Mischklänge mit dem Spieler)
 const LEAK_FACTOR = 1.8;            // Mikrofon > 1,8 × erwartetes Echo → Musiker spielt
 const TONELESS_FRAMES = 6;          // ~30 ms tonloser Aktivität beenden das Halten
-const MIX_ECHO_MAX = 0.25;          // Mischsignal-Tonhöhe nur, wenn Echo < 25 % des Spielers
+const MIX_ECHO_MAX = 0.25;          // Echo ≥ 25 % des Spielers: Mischsignal-Tonhöhe verfälscht …
+const MIX_MAX_CENTS = 6;            // … dann nur kleine Abweichungen daraus anzeigen
+const COMB_ACTIVE = 3;              // Kammfilter-Signal > 3 × Grundrauschen → Spieler aktiv
+const LOCK_GRACE_MS = 400;          // Einrasten: zuletzt ≤ LOCK_NEAR ct gemessen, vor höchstens 400 ms …
+const LOCK_NEAR = 4;
+const LOCK_CENTS = 3;               // … Gesamtsignal auf der Referenz …
+const LOCK_EVIDENCE_MS = 500;       // … und Spuren des Spielers im Kammfilter-Signal vor < 500 ms
+const LOCK_STEADY = 6;              // „ruhig“: verlässliche Messungen durchgehend ≤ 6 ct …
+const LOCK_STEADY_MS = 250;         // … seit mindestens 250 ms (kein Vibrato-Durchgang)
+const COMB_TRACE = 1.15;            // Spur: gemittelte Kammfilter-Leistung > 1,15 × Rauschleistung
 const COMB_SHARE = 0.2;             // Kammfilter-Signal muss ≥ 20 % des Spielerpegels haben
 
 export const gateFor = (s) => 0.05 * 10 ** (-(s - 1) / 4.5);
@@ -71,6 +80,14 @@ export class Tracker {
     this.toneless = 0;              // Messungen „Musiker aktiv, aber Tonhöhe unklar“ in Folge
     this.holdEndedAt = -Infinity;
     this.tailMs = settings.tailMs ?? 0;  // gemessener Nachhall des Echos (Raumhall)
+    // Grundrauschen des echobereinigten Signals, wenn nur das Echo klingt: liegt das
+    // Signal klar darüber, spielt der Musiker – unabhängig davon, wie laut das Echo ist
+    this.combFloor = settings.combFloor ?? null;
+    this.locked = false;            // eingerastet: Spieler exakt auf der Referenz
+    this.nearAt = -Infinity;        // zuletzt ruhig und ≤ LOCK_NEAR Cent gemessen
+    this.steadySince = null;
+    this.combTraceAt = -Infinity;   // zuletzt Spuren des Spielers im Kammfilter-Signal
+    this.combPow = null;            // gemittelte Leistung des Kammfilter-Signals
     this.arrivalKnown = false;      // meldet das Worklet den ankommenden Referenzton?
     this.lastArr = 0;
     this.lastPitch = null;
@@ -115,6 +132,13 @@ export class Tracker {
     const upd = (v, x) => (v == null ? x : x < v ? v + 0.3 * (x - v) : v + 0.01 * (x - v));
     if (m.refRms > 1e-3) this.leakGain = upd(this.leakGain, m.rms / m.refRms);
     if (m.echo > 1e-4) this.echoK = upd(this.echoK, m.rms / m.echo);
+    if (m.rmsC !== undefined) this.combFloor = upd(this.combFloor, m.rmsC);
+  }
+
+  // Spieler im echobereinigten Signal nachweisbar (deutlich über dessen Grundrauschen)?
+  combActive(m, gate) {
+    if (m.rmsC === undefined || this.combFloor == null) return false;
+    return m.rmsC > COMB_ACTIVE * this.combFloor && m.rmsC > 0.05 * gate;
   }
 
   expectedEcho(m) {
@@ -160,7 +184,7 @@ export class Tracker {
     };
 
     if (!rf || m.fc === undefined) {
-      if (m.f > 0 && m.clarity >= CLARITY_MIN && m.rms >= gate && !oldEcho(m.f)) return { ...analyzeFreq(m.f, a4), f: m.f, kind: 'free' };
+      if (m.f > 0 && m.clarity >= CLARITY_MIN && m.rms >= gate && !oldEcho(m.f)) return { ...analyzeFreq(m.f, a4), f: m.f, kind: 'free', reliable: true };
       return null;
     }
 
@@ -179,7 +203,7 @@ export class Tracker {
       // Kammfilter-Signal ab (z. B. 5/4 der Frequenz, wenn untere Teiltöne fehlen)
       const rawOk = m.f > 0 && m.clarity >= CLARITY_MIN && !inFamily(m.f, rf) && !oldEcho(m.f);
       const disputed = rawOk && analyzeFreq(m.f, a4).note !== c.note;
-      return { ...c, f: m.fc, kind: 'free', src: 'comb', disputed };
+      return { ...c, f: m.fc, kind: 'free', src: 'comb', disputed, reliable: !disputed };
     }
 
     // 2. Spielt der Musiker zusätzlich zum Echo (im Zusammenklang mit der Referenz)?
@@ -199,8 +223,36 @@ export class Tracker {
       const d = Math.abs(centsBetween(m.fc, rf));
       combHint = d > FAMILY_CENTS && d < 60;
     }
-    const active = m.rms >= gate && (levelActive || pitchActive || combHint);
-    if (!active) return null;
+    //    d) Kammfilter-Signal deutlich über seinem Grundrauschen: Das Echo ist dort
+    //       restlos entfernt, was bleibt, ist der Spieler (auch wenige Cent neben
+    //       der Referenz, dann stark abgeschwächt, aber messbar)
+    const combOn = this.combActive(m, gate);
+    // Spuren: über ~35 ms gemittelte Leistung des Kammfilter-Signals etwas über
+    // dem Grundrauschen (Rauschen schwankt gemittelt nur um wenige Prozent)
+    if (m.rmsC !== undefined) this.combPow = this.combPow == null ? m.rmsC ** 2 : this.combPow + 0.15 * (m.rmsC ** 2 - this.combPow);
+    if (this.combFloor != null && this.combPow > COMB_TRACE * this.combFloor ** 2) this.combTraceAt = now;
+    const active = m.rms >= gate && (levelActive || pitchActive || combHint || combOn);
+    if (active) {
+      if (this.locked) { this.locked = false; this.io.locked?.(false); }
+    } else {
+      // Eingerastet: Der Spieler hat sich bis auf wenige Cent an die Referenz
+      // herangetastet und ist jetzt kaum noch vom Echo zu unterscheiden (gleiche
+      // Tonhöhe; der Gesamtpegel taugt nicht, weil Spieler und Echo schweben).
+      // Ein echter Spieler schwankt immer um 1–2 Cent; das hinterlässt im
+      // Kammfilter-Signal schwache Spuren über dem Grundrauschen. Fehlen sie
+      // länger als LOCK_EVIDENCE_MS, ist nur noch das Echo da (auch wenn der
+      // Pegel kaum fällt, weil das Echo viel lauter ist als der Spieler).
+      const recentlyNear = this.locked || now - this.nearAt < LOCK_GRACE_MS;
+      const traces = now - this.combTraceAt < LOCK_EVIDENCE_MS;
+      const levelHeld = traces;
+      const rawAtRef = m.f > 0 && m.clarity >= CLARITY_MIN && Math.abs(centsBetween(m.f, rf)) < LOCK_CENTS;
+      const wasLocked = this.locked;
+      this.locked = this.currentNote != null && recentlyNear && levelHeld && rawAtRef;
+      if (this.locked !== wasLocked) this.io.locked?.(this.locked);
+      if (!this.locked) return null;
+      const raw = analyzeFreq(m.f, a4);
+      return { note: this.currentNote, cents: raw.cents, f: m.f, kind: 'unison', src: 'lock', locked: true };
+    }
 
     // Musiker klingt mit der Referenz zusammen (gleiche Tonklasse). Die Tonhöhe
     // der Mischung ist nur für die Cent-Abweichung brauchbar; als Notenwechsel
@@ -210,15 +262,22 @@ export class Tracker {
     if (cur != null && m.f > 0 && m.clarity >= CLARITY_MIN && !oldEcho(m.f)) {
       const raw = analyzeFreq(m.f, a4);
       if ((raw.note - cur) % 12 === 0) {
-        // Das Gesamtsignal ist eine Mischung aus Spieler und Echo – seine Tonhöhe ist
-        // zur Referenz hin verfälscht. Nur verwenden, wenn das Echo deutlich leiser ist.
-        let cents = echo < MIX_ECHO_MAX * playerRms ? raw.cents : null, f = m.f;
-        // genauere Cent-Werte aus dem Kammfilter-Signal (obere Teiltöne), falls vorhanden
-        if (m.fc > 0 && m.cc >= 0.5 && m.rmsC >= gate * 0.2 && !inFamily(m.fc, rf, 0.5)) {
+        // Cent-Werte bevorzugt aus dem Kammfilter-Signal: Es enthält nur den Spieler
+        // (exakte Tonhöhe), auch wenn er wenige Cent neben der Referenz liegt und
+        // dort stark abgeschwächt ist – solange es über dem Grundrauschen liegt.
+        // Sonst die Mischung aus Spieler und Echo: zur Referenz hin verfälscht,
+        // der Fehler ist aber höchstens so groß wie die Abweichung selbst – in dem
+        // Fall also klein, weil der Spieler sonst im Kammfilter-Signal sichtbar wäre.
+        let cents = raw.cents, f = m.f, reliable = echo < MIX_ECHO_MAX * playerRms;
+        // (erst ab 3 × Grundrauschen und hoher Klarheit – knapp darüber gibt es Ausreißer)
+        const combUsable = this.combFloor != null ? m.rmsC > 3 * this.combFloor : m.rmsC >= gate * 0.2;
+        if (m.fc > 0 && m.cc >= CLARITY_MIN && combUsable && !inFamily(m.fc, rf, 0.3)) {
           const c = analyzeFreq(m.fc, a4);
-          if ((c.note - cur) % 12 === 0) { cents = c.cents; f = m.fc; }
+          if ((c.note - cur) % 12 === 0) { cents = c.cents; f = m.fc; reliable = true; }
+        } else if (echo >= MIX_ECHO_MAX * playerRms && Math.abs(raw.cents) > MIX_MAX_CENTS) {
+          cents = null;    // große Abweichung nur aus der Mischung: unzuverlässig
         }
-        return { note: raw.note > cur ? raw.note : cur, cents, f, kind: 'unison', src: f === m.f ? 'mix' : 'comb' };
+        return { note: raw.note > cur ? raw.note : cur, cents, f, kind: 'unison', src: f === m.f ? 'mix' : 'comb', reliable: reliable && cents != null };
       }
     }
     return { note: cur, cents: null, f: 0, kind: 'unison' };
@@ -227,7 +286,7 @@ export class Tracker {
   // Darf ein Stoppsignal jetzt wirken? Im Halten – oder kurz danach, falls das
   // Geräusch selbst das Halten beendet hat.
   stopSignalAllowed(now) {
-    return this.currentNote != null && (this.state === 'hold' || now - this.holdEndedAt < 250);
+    return this.currentNote != null && (this.state === 'hold' || this.locked || now - this.holdEndedAt < 250);
   }
 
   pitch(m, now) {
@@ -250,6 +309,12 @@ export class Tracker {
     const p = this.perceive(m, now);
     if (!p || p.cents != null) this.toneless = 0;
 
+    // ruhig nahe der Referenz? (verlässliche Messungen durchgehend ≤ LOCK_STEADY ct)
+    if (p && p.reliable) {
+      if (Math.abs(p.cents) > LOCK_STEADY) this.steadySince = null;
+      else if (this.steadySince == null) this.steadySince = now;
+      if (Math.abs(p.cents) <= LOCK_NEAR && this.steadySince != null && now - this.steadySince >= LOCK_STEADY_MS) this.nearAt = now;
+    }
     if (p && p.cents != null) {
       this.silenceSince = null;
       const inZone = Math.abs(p.cents) <= RANGE;

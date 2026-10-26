@@ -100,7 +100,7 @@ export function trainNlms(mic, ref, delay, L, passes = 4, mu = 0.5) {
 // Ankunft des Echos, also um die Laufzeit verschoben)
 export async function probeEcho(ctx, node, ref, latencyMs = 0) {
   const lat = (latencyMs || 0) / 1000;
-  const ratios = [], ks = [], steady = [], tail = [];
+  const ratios = [], ks = [], steady = [], tail = [], combRest = [];
   const prev = node.port.onmessage;
   const t0 = ctx.currentTime;
   const tStop = 0.6 + lat;                 // Ton aus; Echo endet ab tStop + lat
@@ -110,6 +110,7 @@ export async function probeEcho(ctx, node, ref, latencyMs = 0) {
     const dt = ctx.currentTime - t0;
     if (dt >= lat + 0.25 && dt <= lat + 0.55) {
       steady.push(m.rms);
+      if (m.rmsC !== undefined) combRest.push(m.rmsC);
       if (m.refRms > 1e-3) ratios.push(m.rms / m.refRms);
       if (m.echo > 1e-4) ks.push(m.rms / m.echo);
     }
@@ -128,5 +129,6 @@ export async function probeEcho(ctx, node, ref, latencyMs = 0) {
   const last = tail.filter((x) => x.rms > level * 0.0316).pop();
   const tailMs = last ? Math.min(1000, last.t * 1000) : 0;
   node.port.postMessage({ type: 'echoDelay', samples: Math.round(lat * ctx.sampleRate), tailSamples: Math.round((tailMs / 1000) * ctx.sampleRate) });
-  return { leakGain: med(ratios), echoK: med(ks), tailMs };
+  // Grundrauschen des echobereinigten Signals, während nur das Echo klingt
+  return { leakGain: med(ratios), echoK: med(ks), tailMs, combFloor: med(combRest) };
 }

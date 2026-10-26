@@ -175,16 +175,22 @@ function setMode(m) {
 }
 
 function showState(s) {
-  if (node) {
-    // Stoppsignal-Erkennung nur im Halten (beim Spielen würde z. B. Zungenstoß auslösen) und beim Einlernen
-    const g = gateFor(S.sensitivity);
-    node.port.postMessage({ type: 'transient', value: s === 'hold' || s === 'train', gate: g * g });
-  }
+  updateTransient(s);
   document.body.dataset.state = s;
   $('status').textContent = LABELS[s];
 }
 
+// Stoppsignal-Erkennung nur im Halten bzw. eingerastet (beim freien Spielen würde
+// z. B. der Zungenstoß auslösen) und beim Einlernen
+function updateTransient(s = document.body.dataset.state) {
+  if (!node) return;
+  const g = gateFor(S.sensitivity);
+  const on = s === 'hold' || s === 'train' || (s === 'tracking' && !!tracker?.locked);
+  node.port.postMessage({ type: 'transient', value: on, gate: g * g });
+}
+
 const trackerIO = {
+  locked(v) { diag.event('locked', { v }); updateTransient(); },
   startReference(note) {
     ref.play(freqFromMidi(note + S.octave, S.a4));
     node.port.postMessage({ type: 'ref', f: ref.freq });
@@ -398,6 +404,7 @@ async function runCalibration(auto = false) {
     tracker.leakGain = p.leakGain;
     tracker.echoK = r.ok ? p.echoK : null;
     tracker.tailMs = r.ok ? p.tailMs : 0;
+    tracker.combFloor = p.combFloor;
     $('echo-info').textContent = r.ok
       ? `Echo-Laufzeit ${r.latencyMs.toFixed(0)} ms · Nachhall ${p.tailMs.toFixed(0)} ms · Unterdrückung ${r.erleDb.toFixed(0)} dB`
       : 'Kein Echo messbar (Kopfhörer) – keine Unterdrückung nötig.';
